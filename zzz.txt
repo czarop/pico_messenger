@@ -1,0 +1,33 @@
+Telegram Bot:
+
+a) Create a bot
+Chat with @BotFather, /newbot, get a token. Done once, token never expires.
+
+b) Fetch updates (incoming messages from you)
+GET https://api.telegram.org/bot<TOKEN>/getUpdates?offset=<last_update_id+1>
+
+https://api.telegram.org/bot8699589319:AAFBpa8sBXzj8dXr5-_mvRwCb258LhMpsNY/getUpdates
+
+Returns an array of messages
+offset prevents re-reading old messages — store the last update_id you saw and send +1
+Poll this every few seconds from your pico
+Parse the text field to decide what to do
+
+
+c) Send a message (pico → your iPhone)
+GET https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<ID>&text=Hello+from+Pico
+
+https://api.telegram.org/bot8699589319:AAFBpa8sBXzj8dXr5-_mvRwCb258LhMpsNY/sendMessage?chat_id=8633586659&text=Motion+detected
+
+Spaces as + or %20 in the URL
+That's it — you've already proven this works
+
+
+The typical embedded loop is:
+loop {
+    poll getUpdates → parse command → act on GPIO/sensor/etc
+    if event occurred → sendMessage
+    sleep(5 seconds)
+}
+Two endpoints, both plain HTTPS GETs, both work with exactly the TLS stack you've already got running.
+

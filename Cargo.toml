@@ -1,0 +1,129 @@
+
+[package]
+edition = "2024"
+name = "pico_messenger"
+version = "0.1.0"
+license = "MIT or Apache-2.0"
+
+[build-dependencies]
+regex = "1.11.0"
+dotenvy_macro = "0.15"
+dotenvy = "0.15"
+
+[dependencies]
+# cortex-m = "0.7"
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+defmt = "1"
+defmt-rtt = "1"
+# The Wireless stack for the Pico W
+cyw43 = { version = "0.7", features = ["defmt"] }
+cyw43-pio = { version = "0.10" }
+static_cell = "2.1.1"
+portable-atomic = { version = "1", features = ["critical-section"] }
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+embassy-embedded-hal = { version = "0.6.0", features = ["defmt"] }
+log = "0.4"
+embassy-executor = { version = "0.10.0", features = [
+    "platform-cortex-m",
+    "executor-thread",
+    # "executor-interrupt",
+    "defmt",
+] }
+embassy-time = { version = "0.5.1", features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+] }
+embassy-rp = { version = "0.10.0", features = [
+    "defmt",
+    # "unstable-pac",
+    "time-driver",
+    # "critical-section-impl",
+    "rp2040",
+] }
+
+
+heapless = "0.9"
+
+# embedded-hal-1 = { package = "embedded-hal", version = "1.0" }
+# embedded-hal-async = "1.0"
+# embedded-hal-bus = { version = "0.1", features = ["async"] }
+embedded-io-async = { version = "0.7.0", features = ["defmt"] }
+# embedded-storage = { version = "0.3" }
+
+# rand = { version = "0.9.0", default-features = false }
+# embedded-sdmmc = "0.7.0"
+
+
+# embassy-sync = { version = "0.8.0", features = ["defmt"] }
+
+
+embassy-net = { version = "0.9.1", features = [
+    "defmt",
+    #     "icmp",
+    "tcp",
+    #     "udp",
+    #     "raw",
+    "dhcpv4",
+    "medium-ethernet",
+    "dns",
+    "proto-ipv4",
+    #     "proto-ipv6",
+    #     "multicast",
+] }
+embedded-tls = { git = "https://github.com/drogue-iot/embedded-tls.git", rev = "bd13e11", default-features = false, features = [
+    "rustpki",
+    "defmt",
+] }
+
+
+httparse = { version = "1", default-features = false }
+embedded-nal-async = "0.9.0"
+# embassy-net-wiznet = { version = "0.3.0", features = ["defmt"] }
+# embassy-futures = { version = "0.1.2" }
+# embassy-usb-logger = { version = "0.6.0" }
+# fixed = "1.31.0"
+# fixed-macro = "1.2.0"
+
+
+# [target.thumbv6m-none-eabi.dependencies]
+# rp2040-boot2 = "0.3"
+# rp2040-hal = { version = "0.12", features = ["rt", "critical-section-impl"] }
+
+[patch.crates-io]
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+cyw43 = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+# embassy-net-wiznet = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+# embassy-usb-logger = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+
+
+# [profile.dev]
+# opt-level = "s"   # size optimisation even in debug
+# debug = 2         # reduced debug info (not full=2)
+# lto = "thin"
+# codegen-units = 1
+[profile.dev]
+# Increase codegen-units to allow parallel compilation
+codegen-units = 16
+# Lower opt-level to 0 (no optimization, fastest compile)
+opt-level = "s"
+# LTO off is critical for fast linking
+lto = false
+# Keep debug info on for step-through debugging
+debug = 2
+incremental = true
+
+[profile.dev.build-override]
+codegen-units = 8
+debug = false
+debug-assertions = false
+opt-level = 0
+overflow-checks = false
