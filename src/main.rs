@@ -20,9 +20,9 @@ use {defmt_rtt as _, panic_probe as _};
 
 use embassy_net::dns::DnsQueryType;
 use embedded_io_async::Write as _;
-use embedded_io_async::Read as _;
+
 use embedded_nal_async::TcpConnect;
-use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
+use embedded_tls::{TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use core::fmt::Write;
 use heapless::String;
 
