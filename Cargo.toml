@@ -43,7 +43,7 @@ embassy-rp = { version = "0.10.0", features = [
 ] }
 
 
-heapless = "0.9"
+heapless = {version = "0.9", features = ["serde"]}
 
 # embedded-hal-1 = { package = "embedded-hal", version = "1.0" }
 # embedded-hal-async = "1.0"
@@ -77,8 +77,11 @@ embedded-tls = { git = "https://github.com/drogue-iot/embedded-tls.git", rev = "
 ] }
 
 
+
 httparse = { version = "1", default-features = false }
 embedded-nal-async = "0.9.0"
+serde-json-core = "0.6"
+serde = { version = "1", default-features = false, features = ["derive"] }
 # embassy-net-wiznet = { version = "0.3.0", features = ["defmt"] }
 # embassy-futures = { version = "0.1.2" }
 # embassy-usb-logger = { version = "0.6.0" }
@@ -103,7 +106,6 @@ embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
 # embassy-net-wiznet = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
 embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
 # embassy-usb-logger = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
-
 
 # [profile.dev]
 # opt-level = "s"   # size optimisation even in debug

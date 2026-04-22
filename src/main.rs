@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-use core::str::from_utf8;
+
 use cyw43::aligned_bytes;
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
@@ -14,13 +14,17 @@ use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::{bind_interrupts, dma};
 use embassy_time::{Duration, Timer};
+use pico_messenger::telegram::UpdateResponse;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 use embassy_net::dns::DnsQueryType;
-use embedded_io_async::Write;
+use embedded_io_async::Write as _;
+use embedded_io_async::Read as _;
 use embedded_nal_async::TcpConnect;
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
+use core::fmt::Write;
+use heapless::String;
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -135,66 +139,140 @@ async fn main(spawner: Spawner) {
         Some(a) => info!("IP Address appears to be: {}", a.address),
         None => core::panic!("DHCP completed but no IP address was assigned!"),
     }
+
+    // let mut last_update_id: i64 = 563798721;
+    let mut last_update_id: i64 = 0;
+    const TOKEN: &str = "8699589319:AAFBpa8sBXzj8dXr5-_mvRwCb258LhMpsNY";
+    let delay = Duration::from_secs(5);
+
+
+
+    
+    // let client_state = TcpClientState::<1, 1024, 1024>::new();
+    let client_state = TcpClientState::<2, 1024, 1024>::new();
+    let tcp_client = TcpClient::new(stack, &client_state);
+    let dns_client = DnsSocket::new(stack);
     let mut rx_buffer = [0; 4096];
     let mut tls_read_buffer = [0; 16640];
     let mut tls_write_buffer = [0; 16640];
+    
+    loop {
+        tls_read_buffer.fill(0);
+    tls_write_buffer.fill(0);
 
-    let client_state = TcpClientState::<1, 1024, 1024>::new();
-    let tcp_client = TcpClient::new(stack, &client_state);
-    let dns_client = DnsSocket::new(stack);
-
-    let url = "https://www.google.com";
+    // 1. Resolve Telegram every iteration (or cache the IP)
     let ip = dns_client
-        .query("google.com", DnsQueryType::A)
+        .query("api.telegram.org", DnsQueryType::A)
         .await
         .unwrap()[0];
 
     let addr = embassy_net::IpEndpoint::new(ip, 443);
 
-    // 2. TCP connect
+    // 2. Fresh TCP + TLS connection each poll
     let mut conn = tcp_client.connect(addr.into()).await.unwrap();
+    // let mut tls = TlsConnection::new(&mut conn, &mut tls_read_buffer, &mut tls_write_buffer);
 
-    // 3. Wrap in TLS
-    let mut tls = TlsConnection::new(&mut conn, &mut tls_read_buffer, &mut tls_write_buffer);
+    let mut rng = embassy_rp::clocks::RoscRng;
+    // let mut provider = UnsecureProvider::new::<Aes128GcmSha256>(&mut rng);
+    
+    
+    let mut provider = UnsecureProvider::new::<embedded_tls::Aes256GcmSha384>(&mut rng);
+    let mut tls = TlsConnection::<_, embedded_tls::Aes256GcmSha384>::new(
+    &mut conn, 
+    &mut tls_read_buffer, 
+    &mut tls_write_buffer
+);
+    let config = TlsConfig::new().with_server_name("api.telegram.org").enable_rsa_signatures();
 
-    let mut rng = embassy_rp::clocks::RoscRng; // adjust if yours is different
-    let mut provider = UnsecureProvider::new::<Aes128GcmSha256>(&mut rng);
-    let config = TlsConfig::new().with_server_name("google.com");
+    tls.open(TlsContext::new(&config, &mut provider)).await.unwrap();
 
-    tls.open(TlsContext::new(&config, &mut provider))
-        .await
-        .unwrap();
+    // 3. Build and send request
+    let offset = last_update_id + 1;
+    let mut request: String<256> = String::new();
+    core::write!(request,
+        "GET /bot{TOKEN}/getUpdates?offset={offset} HTTP/1.1\r\n\
+         Host: api.telegram.org\r\n\
+         Connection: close\r\n\
+         \r\n"
+    ).unwrap();
 
-    // 4. Send request
-    tls.write_all(
-        b"GET / HTTP/1.1\r\n\
-      Host: www.google.com\r\n\
-      Connection: close\r\n\
-      \r\n",
-    )
-    .await
-    .unwrap();
+    tls.write_all(request.as_bytes()).await.unwrap();
     tls.flush().await.unwrap();
 
-    // 5. Read response (just enough for headers)
-    let n = tls.read(&mut rx_buffer).await.unwrap();
-
-    // 6. Parse status code - "HTTP/1.1 301 ..." -> bytes 9..12
-    let status = core::str::from_utf8(&rx_buffer[9..12]).unwrap();
-    info!("Status: {}", status); // expect 301 for google.com
-
-    if status != "200" && status != "301" {
-        info!("Response was not OK, not reading body");
-        loop {
-            Timer::after(Duration::from_secs(1)).await;
-        }
-    } else {
-        let delay = Duration::from_secs(1);
-        for _ in 0..3 {
-            control.gpio_set(0, true).await;
-            Timer::after(delay).await;
-            control.gpio_set(0, false).await;
-            Timer::after(delay).await;
+    // 4. Read response
+    let mut total = 0;
+    loop {
+        match tls.read(&mut rx_buffer[total..]).await {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(_) => break,
         }
     }
+
+
+
+    let n = total;
+
+    info!("Read {} bytes total", n);
+    if n > 0 {
+        if let Ok(s) = core::str::from_utf8(&rx_buffer[..n.min(200)]) {
+            info!("Response: {}", s);
+        }
+    } else {
+        info!("No response body received");
+    }
+
+
+    let body_start = rx_buffer[..n].windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap() + 4;
+    let (response, _) = match serde_json_core::from_slice::<UpdateResponse>(&rx_buffer[body_start..n]) {
+        Ok(res) => res,
+        Err(_err) => {
+            info!("Failed to parse JSON");
+            continue;
+        }
+    };
+
+    if &response.result.len() == &0 {
+        info!("No new messages");
+    } else {
+        info!("Got {} updates", response.result.len());
+    }
+
+    for update in &response.result {
+        log::info!("we have a message with update_id {}", update.update_id);
+        // last_update_id = update.update_id;
+        if let Some(msg) = &update.message {
+            if let Some(text) = msg.text {
+                info!("Got: {}", text);
+            }
+        }
+    }
+
+    Timer::after(delay).await;
+}
+
+
+    // // 5. Read response (just enough for headers)
+    // let n = tls.read(&mut rx_buffer).await.unwrap();
+
+    // // 6. Parse status code - "HTTP/1.1 301 ..." -> bytes 9..12
+    // let status = core::str::from_utf8(&rx_buffer[9..12]).unwrap();
+    // info!("Status: {}", status); // expect 301 for google.com
+
+    // if status != "200" && status != "301" {
+    //     info!("Response was not OK, not reading body");
+    //     loop {
+    //         Timer::after(Duration::from_secs(1)).await;
+    //     }
+    // } else {
+    //     let delay = Duration::from_secs(1);
+    //     for _ in 0..3 {
+    //         control.gpio_set(0, true).await;
+    //         Timer::after(delay).await;
+    //         control.gpio_set(0, false).await;
+    //         Timer::after(delay).await;
+    //     }
+    // }
 }
