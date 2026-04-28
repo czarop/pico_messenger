@@ -1,5 +1,3 @@
-#![no_std]
-
 #[derive(serde::Deserialize)]
 pub struct UpdateResponse<'a> {
     #[serde(borrow)]
