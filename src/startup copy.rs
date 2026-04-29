@@ -23,13 +23,8 @@ use embedded_nal_async::TcpConnect;
 use embedded_tls::{TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use heapless::String;
 use static_cell::StaticCell;
-use embedded_alloc::LlffHeap as Heap;
-use embassy_rp::pac;
 
-#[global_allocator]
-static HEAP: Heap = Heap::empty();
-const PSRAM_BASE_ADDRESS: usize = 0x11000000;
-const HEAP_SIZE: usize = 1024 * 1024;
+
 
 bind_interrupts!(pub struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -45,21 +40,6 @@ static FS: StaticCell<Mutex<ThreadModeRawMutex, Filesystem<'static, EmbassyStora
 
 pub async fn startup(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-
-    unsafe {
-        // Step A: Set GPIO 47 to function as XIP_CS1 (Chip Select for PSRAM)
-        pac::IO_BANK0.gpio(47).ctrl().modify(|w| {
-            w.set_funcsel(pac::io::vals::Gpio0CtrlFuncsel::XIP_CS1);
-        });
-
-        // Step B: Tell the XIP controller that the M1 region (PSRAM) is writable
-        pac::XIP_CTRL.ctrl().modify(|w| {
-            w.set_writable_m1(true);
-        });
-
-        // --- 3. GIVE MEMORY TO ALLOCATOR ---
-        HEAP.init(PSRAM_BASE_ADDRESS as usize, HEAP_SIZE);
-    }
 
     // let stack = connect_wifi(
     //     &spawner, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.PIO0, p.DMA_CH0,
