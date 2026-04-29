@@ -81,6 +81,7 @@ postcard = "1.0"
 littlefs2 = {version="0.7.1", features=["c-stubs"]}
 delog = { version = "0.1.8", features = ["portable-atomic"] }
 # embassy-futures = { version = "0.1.2" }
+atat = {version = "0.24", features = ["defmt", "heapless"]}
 
 [patch.crates-io]
 embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
@@ -92,6 +93,7 @@ embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "2
 embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
 embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
 embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+atat = {git = "https://github.com/FactbirdHQ/atat", rev = "edceb1a"}
 
 # [profile.dev]
 # opt-level = "s"   # size optimisation even in debug
