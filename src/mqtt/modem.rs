@@ -3,7 +3,7 @@ use atat::{
     asynch::{AtatClient, Client},
 };
 
-use crate::mqtt::{commands, responses};
+use crate::mqtt::{commands, responses, urc};
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::{PIN_0, PIN_1, UART0};
 use embassy_rp::{
@@ -51,12 +51,12 @@ pub async fn initiate_mqtt(
     // ingress task accepts bytes and understands there is a response - sends to res_slot
     static RES_SLOT: ResponseSlot<INGRESS_BUF_SIZE> = ResponseSlot::new();
     // a broadcast task to send messages like 'signal lost' to all listeners
-    static URC_CHANNEL: UrcChannel<responses::Urc, URC_CAPACITY, URC_SUBSCRIBERS> =
+    static URC_CHANNEL: UrcChannel<urc::Urc, URC_CAPACITY, URC_SUBSCRIBERS> =
         UrcChannel::new();
 
     // uses a Digester (which knows the AT command syntax) to turn raw bytes into Rust enums
     let ingress = Ingress::new(
-        DefaultDigester::<responses::Urc>::default(),
+        DefaultDigester::<urc::Urc>::default(),
         INGRESS_BUF.init([0; INGRESS_BUF_SIZE]),
         &RES_SLOT,
         &URC_CHANNEL,
@@ -108,8 +108,8 @@ pub async fn initiate_mqtt(
 async fn ingress_task(
     mut ingress: Ingress<
         'static,
-        DefaultDigester<responses::Urc>,
-        responses::Urc,
+        DefaultDigester<urc::Urc>,
+        urc::Urc,
         INGRESS_BUF_SIZE,
         URC_CAPACITY,
         URC_SUBSCRIBERS,

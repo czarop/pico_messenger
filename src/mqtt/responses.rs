@@ -1,5 +1,5 @@
 //! Responses for General Commands
-use atat::atat_derive::{AtatResp, AtatUrc};
+use atat::atat_derive::{AtatResp};
 use atat::heapless::String;
 
 #[derive(Clone, AtatResp)]
@@ -36,13 +36,4 @@ pub struct WifiMac {
 
 
 
-// the response enum
-#[derive(Clone, AtatResp)]
-pub struct MqttResponse {
-    #[at_arg(position = 0)]
-    pub topic: String<64>,
-    #[at_arg(position = 1)]
-    pub len: usize,
-    #[at_arg(position = 2)]
-    pub message: String<128>,
-}
+

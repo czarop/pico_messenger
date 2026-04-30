@@ -1,22 +1,33 @@
 use super::responses::*;
-use atat::atat_derive::{AtatCmd, AtatResp, AtatUrc};
-use heapless::String;
-// define your AT commands as Rust structs and then handle
-// the "Unsolicited Result Codes" (URCs) that the modem sends
-// when it receives a message from the broker
+use atat::atat_derive::{AtatCmd, AtatResp};
 
-// #[derive(Clone, AtatCmd)]
-// #[at_cmd("", NoResponse, timeout_ms = 1000)]
-// pub struct AT;
+// define your AT commands as Rust structs and link them to a response type
+// how you ask the modem to do things
 
-// #[derive(Clone, AtatResp)]
-// pub struct MessageWaitingIndication;
+/// example
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+CGMI", ExampleResponse, timeout_ms = 1000)]
+pub struct ExampleWithFields{
+    #[at_arg(position = 0)]
+    pub arg1: u8,
+    #[at_arg(position = 1, len = 64)]
+    pub arg2: heapless::String<64>,
+}
+
+#[derive(Clone, AtatResp)]
+pub struct ExampleResponse {
+    #[at_arg(position = 0)]
+    pub arg1: u8,
+    #[at_arg(position = 1, len = 64)]
+    pub arg2: heapless::String<64>,
+}
+
 
 /// 4.1 Manufacturer identification +CGMI
 ///
 /// Text string identifying the manufacturer.
 #[derive(Clone, AtatCmd)]
-#[at_cmd("+CGMI", ManufacturerId)]
+#[at_cmd("+CGMI", ManufacturerId, timeout_ms = 1000)]
 pub struct GetManufacturerId;
 
 /// Model identification +CGMM
