@@ -1,5 +1,6 @@
 use super::responses::*;
 use atat::atat_derive::{AtatCmd, AtatResp};
+use heapless::String;
 
 // define your AT commands as Rust structs and link them to a response type
 // how you ask the modem to do things
@@ -50,3 +51,10 @@ pub struct GetSoftwareVersion;
 #[derive(Clone, AtatCmd)]
 #[at_cmd("+UWAPMACADDR", WifiMac)]
 pub struct GetWifiMac;
+
+
+pub enum ModemCommand {
+    GetSignalStrength,
+    SendSms { number: String<20>, body: String<160> },
+    Connect,
+}
