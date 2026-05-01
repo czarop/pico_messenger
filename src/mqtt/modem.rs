@@ -7,7 +7,7 @@ use heapless::String;
 
 use crate::mqtt::{commands::{self, ModemCommand}, urc};
 use embassy_executor::Spawner;
-use embassy_rp::peripherals::{PIN_0, PIN_1, UART0};
+use embassy_rp::peripherals::{PIN_12, PIN_13, UART0};
 use embassy_rp::{
     Peri, bind_interrupts,
     uart::{self, BufferedInterruptHandler, BufferedUart, BufferedUartRx},
@@ -23,10 +23,10 @@ bind_interrupts!(struct Irqs {
     UART0_IRQ => BufferedInterruptHandler<UART0>;
 }); // interrupt ongoing tasks to add incoming messages to the buffer
 
-pub async fn initiate_mqtt(
+pub async fn initiate_modem(
     spawner: Spawner,
-    tx_pin: Peri<'static, PIN_0>,
-    rx_pin: Peri<'static, PIN_1>,
+    tx_pin: Peri<'static, PIN_12>,
+    rx_pin: Peri<'static, PIN_13>,
     uart: Peri<'static, UART0>,
 ) {
     // statically allocate the mutable memory for the buffers

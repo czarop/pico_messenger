@@ -114,3 +114,4 @@ $RECYCLE.BIN/
 
 .env
 .cargo/config.toml
+.claude/*
