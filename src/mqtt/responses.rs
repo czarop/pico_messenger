@@ -1,5 +1,5 @@
 //! Responses for General Commands
-use atat::atat_derive::{AtatResp};
+use atat::atat_derive::AtatResp;
 use atat::heapless::String;
 
 #[derive(Clone, AtatResp)]
@@ -33,7 +33,3 @@ pub struct WifiMac {
 }
 
 //////////////////////////////////////////////////
-
-
-
-

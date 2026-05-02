@@ -7,10 +7,10 @@ use heapless::String;
 pub enum Urc {
     #[at_urc("+UMQTT")]
     MessageWaitingIndication(MqttMessage),
-    
+
     #[at_urc("+CREG")]
     NetworkRegistration(NetworkRegistration),
-    
+
     #[at_urc("+CMT")]
     IncomingSms(IncomingSms),
 }

@@ -8,7 +8,7 @@ use heapless::String;
 /// example
 #[derive(Clone, AtatCmd)]
 #[at_cmd("+CGMI", ExampleResponse, timeout_ms = 1000)]
-pub struct ExampleWithFields{
+pub struct ExampleWithFields {
     #[at_arg(position = 0)]
     pub arg1: u8,
     #[at_arg(position = 1, len = 64)]
@@ -22,7 +22,6 @@ pub struct ExampleResponse {
     #[at_arg(position = 1, len = 64)]
     pub arg2: heapless::String<64>,
 }
-
 
 /// 4.1 Manufacturer identification +CGMI
 ///
@@ -52,9 +51,11 @@ pub struct GetSoftwareVersion;
 #[at_cmd("+UWAPMACADDR", WifiMac)]
 pub struct GetWifiMac;
 
-
 pub enum ModemCommand {
     GetSignalStrength,
-    SendSms { number: String<20>, body: String<160> },
+    SendSms {
+        number: String<20>,
+        body: String<160>,
+    },
     Connect,
 }

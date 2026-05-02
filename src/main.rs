@@ -5,14 +5,9 @@ use embassy_executor::Spawner;
 use pico_messenger::startup::startup;
 use {defmt_rtt as _, panic_probe as _};
 
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    
-
     startup(spawner).await;
-
-
 
     // // 5. Read response (just enough for headers)
     // let n = tls.read(&mut rx_buffer).await.unwrap();

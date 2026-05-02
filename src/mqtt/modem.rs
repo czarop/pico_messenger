@@ -5,7 +5,10 @@ use atat::{
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use heapless::String;
 
-use crate::mqtt::{commands::{self, ModemCommand}, urc};
+use crate::mqtt::{
+    commands::{self, ModemCommand},
+    urc,
+};
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::{PIN_12, PIN_13, UART0};
 use embassy_rp::{
@@ -39,11 +42,15 @@ pub async fn initiate_modem(
     // a broadcast task to send messages to all listeners when something is received
     static URC_CHANNEL: UrcChannel<urc::Urc, URC_CAPACITY, URC_SUBSCRIBERS> = UrcChannel::new();
     static BUF: StaticCell<[u8; 1024]> = StaticCell::new();
-    static CLIENT: StaticCell<Client<'static, uart::BufferedUartTx, INGRESS_BUF_SIZE>> = StaticCell::new();
+    static CLIENT: StaticCell<Client<'static, uart::BufferedUartTx, INGRESS_BUF_SIZE>> =
+        StaticCell::new();
 
     // combine the raw UART with the uart
     let uart = BufferedUart::new(
-        uart, tx_pin, rx_pin, Irqs,
+        uart,
+        tx_pin,
+        rx_pin,
+        Irqs,
         TX_BUF.init([0; 16]),
         RX_BUF.init([0; 16]),
         uart::Config::default(),
@@ -95,7 +102,7 @@ async fn ingress_task(
 // react to messages
 #[embassy_executor::task]
 async fn urc_task(
-    mut sub: atat::UrcSubscription<'static,urc::Urc,URC_CAPACITY,URC_SUBSCRIBERS> ,
+    mut sub: atat::UrcSubscription<'static, urc::Urc, URC_CAPACITY, URC_SUBSCRIBERS>,
 ) -> ! {
     loop {
         let urc = sub.next_message_pure().await;
@@ -115,7 +122,7 @@ pub static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, ModemCommand, 4> = 
 
 #[embassy_executor::task]
 async fn modem_task(
-    client: &'static mut Client<'static, uart::BufferedUartTx, INGRESS_BUF_SIZE>
+    client: &'static mut Client<'static, uart::BufferedUartTx, INGRESS_BUF_SIZE>,
 ) -> ! {
     loop {
         let cmd = COMMAND_CHANNEL.receive().await;
@@ -127,9 +134,15 @@ async fn modem_task(
                 }
             }
             ModemCommand::SendSms { number, body } => {
-                client.send(&commands::ExampleWithFields { arg1: 0, arg2: String::<64>::new() }).await.ok();
+                client
+                    .send(&commands::ExampleWithFields {
+                        arg1: 0,
+                        arg2: String::<64>::new(),
+                    })
+                    .await
+                    .ok();
             }
-            ModemCommand::Connect => todo!()
+            ModemCommand::Connect => todo!(),
         }
     }
 }
