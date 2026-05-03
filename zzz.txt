@@ -1,3 +1,46 @@
+Sleep & Wake Strategy
+Normal cycle (State A)
+
+RP2350 fully dormant, no internal clocks
+Modem PSM timer set for 15 mins, RING pin (GPIO8) wakes RP2350
+On wake: check accelerometer WAKE_UP_SRC
+If moved → GPS fix + MQTT publish → clear wake source → sleep again
+If not moved → transition to State B
+
+Waiting for motion (State B)
+
+Skip GPS entirely
+RP2350 fully dormant, accelerometer INT1 (GPIO15) is sole wake source
+On wake: transition back to State A, do GPS immediately
+
+Wakeup sources
+
+Modem RING pin GPIO8 edge → State A cycle
+Accelerometer INT1 GPIO15 edge → State B exit
+
+Modem
+
+Manages 15 min PSM timer entirely independently
+RP2350 asserts GPIO10 to wake modem only when ready to send
+RING pin signals RP2350 when modem timer fires
+
+Accelerometer
+
+Runs at 1.6Hz ODR (~1µA) throughout
+Hardware latches motion in WAKE_UP_SRC
+Cleared before each sleep cycle
+Threshold ~250mg, 1 sample duration
+
+Power budget (3300mAh)
+
+RP2350 fully clockless during sleep — better than AON timer approach
+Modem PSM 1.2µA, accelerometer ~1µA — essentially zero sleep draw
+~16 days worst case, more with stationary periods
+
+
+
+
+
 Telegram Bot:
 
 a) Create a bot

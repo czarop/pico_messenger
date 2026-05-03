@@ -2,10 +2,12 @@ use embedded_graphics::{
     Drawable,
     pixelcolor::BinaryColor,
     prelude::{DrawTarget, Point, Size},
-    primitives::{PrimitiveStyleBuilder, Rectangle},
+    primitives::{Line, PrimitiveStyleBuilder, Rectangle},
 };
 
 use embedded_graphics::prelude::Primitive;
+
+use crate::battery_meter::BatteryLevel;
 
 pub struct BatteryIcon<'a> {
     pub level: &'a BatteryLevel,
@@ -32,11 +34,25 @@ impl<'a> Drawable for BatteryIcon<'a> {
             .into_styled(fill)
             .draw(display)?;
 
+        if BatteryLevel::Charging == *self.level {
+
+        let cx = self.position.x + 10;
+        let cy = self.position.y + 4;
+
+        Line::new(Point::new(cx - 2, cy), Point::new(cx + 2, cy))
+            .into_styled(stroke).draw(display)?;
+        Line::new(Point::new(cx, cy - 2), Point::new(cx, cy + 2))
+            .into_styled(stroke).draw(display)?;
+                } 
+
         let bars = match self.level {
             BatteryLevel::Empty => 0,
-            BatteryLevel::Low => 1,
-            BatteryLevel::Medium => 2,
-            BatteryLevel::Full => 4,
+            BatteryLevel::Critical => 1,
+            BatteryLevel::Low => 2,
+            BatteryLevel::Medium => 3,
+            BatteryLevel::High => 4,
+            BatteryLevel::Full => 5,
+            BatteryLevel::Charging => 0,
         };
         for i in 0..bars {
             Rectangle::new(self.position + Point::new(2 + i * 4, 2), Size::new(3, 5))
@@ -45,11 +61,4 @@ impl<'a> Drawable for BatteryIcon<'a> {
         }
         Ok(())
     }
-}
-
-pub enum BatteryLevel {
-    Empty,
-    Low,
-    Medium,
-    Full,
 }
