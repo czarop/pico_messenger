@@ -1,6 +1,6 @@
 use crate::accelerometer::Accelerometer;
 use crate::battery_meter::BatteryLevel;
-use crate::display::screen;
+use crate::display::screen::{self, StatusScreen};
 use crate::state::{EmbassyStorage, load_state};
 use heapless::String;
 use core::fmt::Write;
@@ -141,14 +141,31 @@ pub async fn startup(spawner: Spawner) {
     };
     let battery_level = BatteryLevel::from_soc(soc, is_charging);
     
-
-    let _ = display.show_message(temp_reading.as_deref(), humidity_reading.as_deref(), Some("Updated!"), battery_level).await;
+    let display_info = StatusScreen{ 
+        battery: battery_level, 
+        message: [
+            temp_reading.clone(),
+            humidity_reading.clone(),
+            Some(heapless::String::<24>::from_str("Updated!").expect("could not make heapless string")),
+            None,
+            None
+    ]};
+    let _ = display.show_message(display_info).await;
     
     embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
     
 
     // info!("Entering low power mode, waiting for motion...");
-    let _ = display.show_message(temp_reading.as_deref(), humidity_reading.as_deref(), Some("Shake to update"), battery_level).await;
+    let display_info = StatusScreen{ 
+        battery: battery_level, 
+        message: [
+            temp_reading,
+            humidity_reading,
+            Some(heapless::String::<24>::from_str("Shake to update").expect("could not make heapless string")),
+            None,
+            None
+    ]};
+    let _ = display.show_message(display_info).await;
     // embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
     accelerometer.wait_for_motion().await;
 

@@ -3,12 +3,12 @@ use thiserror::Error;
 
 const HDC302X_ADDR: u8 = 0x44;
 
-pub struct TempSensor<I> {
+pub struct Magnetometer<I> {
     i2c: I,
     recv_buffer: [u8; 6],
 }
 
-impl<I> TempSensor<I>
+impl<I> Magnetometer<I>
 where
     I: I2c,
 {
@@ -19,7 +19,7 @@ where
         }
     }
 
-    pub async fn read_temperature(
+    pub async fn read_direction(
         &mut self,
         power_mode: TempSensorPowerMode,
     ) -> Result<TempSensorReading, TempSensorError<I::Error>> {

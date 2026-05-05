@@ -8,3 +8,4 @@ pub mod state;
 pub mod battery_meter;
 pub mod display;
 pub mod temp_sensor;
+pub mod magnetometer;

@@ -13,12 +13,12 @@ use oled_async::{Builder, prelude::*};
 
 use crate::{battery_meter::BatteryLevel, display::battery::BatteryIcon};
 
-pub struct StatusScreen<'a> {
+pub struct StatusScreen {
     pub battery: BatteryLevel,
-    pub message: [&'a str; 3],
+    pub message: [Option<heapless::String::<24>>; 5],
 }
 
-impl Drawable for StatusScreen<'_> {
+impl Drawable for StatusScreen {
     type Color = BinaryColor;
     type Output = ();
 
@@ -35,13 +35,17 @@ impl Drawable for StatusScreen<'_> {
         .draw(display)?;
 
         for (i, line) in self.message.iter().enumerate() {
-            Text::with_baseline(
-                line,
+            if let Some(text) = line.as_deref() {
+                Text::with_baseline(
+                text,
                 Point::new(0, 2 + i as i32 * 12),
                 text_style,
                 Baseline::Top,
             )
             .draw(display)?;
+
+            }
+            
         }
 
         Ok(())
@@ -94,23 +98,13 @@ impl Display {
     // pub async fn show_status(&mut self, battery: u8, signal: i8) { ... }
     pub async fn show_message(
         &mut self,
-        msg_line_1: Option<&str>,
-        msg_line_2: Option<&str>,
-        msg_line_3: Option<&str>,
-        battery: BatteryLevel,
+        display_info: StatusScreen
     ) -> Result<(), DisplayError> {
         let display = &mut self.inner;
         display.clear();
 
-        let status_screen = StatusScreen {
-            battery,
-            message: [
-                msg_line_1.unwrap_or_default(),
-                msg_line_2.unwrap_or_default(),
-                msg_line_3.unwrap_or_default(),
-            ],
-        };
-        status_screen
+        
+        display_info
             .draw(display)
             .map_err(|_| DisplayError::Flush)?;
 
