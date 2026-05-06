@@ -109,4 +109,6 @@ impl Accelerometer {
         dormant_sleep(); // halts all clocks - µA level power draw
         drop(dormant); // re-enables clocks, restores GPIO state
     }
+
+
 }
