@@ -120,6 +120,13 @@ impl Accelerometer {
 
         Ok(res)
     }
+
+    pub async fn read_orientation(&mut self) -> Result<Orientation, AccelerometerError<I2cDeviceError<embassy_rp::i2c::Error>>> {
+        let val = self.inner.read_reg(Register::SixDimSource).await?;
+        Ok(Orientation::from_reg(val))
+    }
+
+    
 }
 
 pub struct AccelerometerReading {
@@ -161,5 +168,32 @@ pub enum AccelerometerError<E: core::fmt::Debug> {
 impl<E: core::fmt::Debug> From<E> for AccelerometerError<E> {
     fn from(e: E) -> Self {
         AccelerometerError::I2cError(e)
+    }
+}
+
+
+
+#[derive(Debug, defmt::Format)]
+pub enum Orientation {
+    XDown,
+    XUp,
+    YDown,
+    YUp,
+    ZDown,
+    ZUp,
+    Unknown,
+}
+
+impl Orientation {
+    pub fn from_reg(val: u8) -> Self {
+        match val & 0x3F {
+            v if v & 0x01 != 0 => Orientation::XDown,
+            v if v & 0x02 != 0 => Orientation::XUp,
+            v if v & 0x04 != 0 => Orientation::YDown,
+            v if v & 0x08 != 0 => Orientation::YUp,
+            v if v & 0x10 != 0 => Orientation::ZDown,
+            v if v & 0x20 != 0 => Orientation::ZUp,
+            _ => Orientation::Unknown,
+        }
     }
 }

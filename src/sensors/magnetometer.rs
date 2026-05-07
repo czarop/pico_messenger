@@ -1,3 +1,4 @@
+use {defmt::*, defmt_rtt as _, embassy_time::{Duration, Instant, Timer}, panic_probe as _};
 use embedded_hal_async::i2c::I2c;
 use thiserror::Error;
 
@@ -117,12 +118,23 @@ where
     pub async fn read_direction(
         &mut self,
     ) -> Result<MagnetometerReading, MagnetometerError<I::Error>> {
+        let raw = self.read_raw().await?;
+        if let Some(trim) = &self.trim_data {
+            MagnetometerReading::from_raw(&raw, trim)
+        } else {
+            Err(MagnetometerError::InvalidData(
+                "Data could not be converted from raw",
+            ))
+        }
+    }
+
+    pub async fn read_raw(&mut self,
+    ) -> Result<RawReading, MagnetometerError<I::Error>> {
         if !self.power_state.is_sleep() {
             self.i2c
                 .write(BMM150_ADDR, &PowerMode::Sleep.command())
                 .await?;
             embassy_time::Timer::after(embassy_time::Duration::from_millis(3)).await;
-
             if self.trim_data.is_none() {
                 let mut buf2 = [0u8; 2];
                 let mut buf4 = [0u8; 4];
@@ -133,7 +145,6 @@ where
                 self.i2c
                     .write_read(BMM150_ADDR, &[0x68], &mut buf10)
                     .await?;
-
                 let trim_data = TrimData::from((
                     TrimX1Y1::from(buf2),
                     TrimXYZ::from(buf4),
@@ -143,12 +154,10 @@ where
             }
             self.power_state = PowerMode::Sleep;
         }
-
         // default singular read
         self.i2c
             .write(BMM150_ADDR, &OperationMode::Forced.command_default_reg())
             .await?;
-
         // wait for data to be ready
         loop {
             embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
@@ -161,19 +170,50 @@ where
         }
 
         let raw: RawReading = self.recv_buffer.into();
-
         if !raw.is_ready() {
             return Err(MagnetometerError::StaleData);
         }
-
-        if let Some(trim) = &self.trim_data {
-            MagnetometerReading::from_raw(&raw, trim)
-        } else {
-            Err(MagnetometerError::InvalidData(
-                "Data could not be converted from raw",
-            ))
-        }
+        Ok(raw)
     }
+
+    pub async fn calibrate(&mut self) {
+    let mut min_x = i16::MAX;
+    let mut max_x = i16::MIN;
+    let mut min_y = i16::MAX;
+    let mut max_y = i16::MIN;
+    let mut min_z = i16::MAX;
+    let mut max_z = i16::MIN;
+
+    let end = Instant::now() + Duration::from_secs(30);
+    
+    while Instant::now() < end {
+        if let Ok(reading) = self.read_raw().await {
+            let x = reading.x_unscaled();
+            let y = reading.y_unscaled();
+            let z = reading.z_unscaled();
+
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+            min_z = min_z.min(z);
+            max_z = max_z.max(z);
+        }
+        Timer::after_millis(100).await;
+    }
+
+    let offset_x = (max_x + min_x) / 2;
+    let offset_y = (max_y + min_y) / 2;
+    let offset_z = (max_z + min_z) / 2;
+
+    let scale_x = (max_x - min_x) / 2;
+    let scale_y = (max_y - min_y) / 2;
+    let scale_z = (max_z - min_z) / 2;
+
+    info!("Offsets: X={}, Y={}, Z={}", offset_x, offset_y, offset_z);
+    info!("Scales:  X={}, Y={}, Z={}", scale_x, scale_y, scale_z);
+}
+    
 }
 
 #[derive(Debug, Error)]
@@ -192,7 +232,7 @@ impl<E: core::fmt::Debug> From<E> for MagnetometerError<E> {
     }
 }
 
-struct RawReading {
+pub struct RawReading {
     x: u16,
     y: u16,
     z: u16,
@@ -217,17 +257,17 @@ impl RawReading {
     }
 
     /// 13-bit signed — data sits in bits 15:3, shift right to discard padding
-    fn x_unscaled(&self) -> i16 {
+    pub fn x_unscaled(&self) -> i16 {
         (self.x as i16) >> 3
     }
 
     /// 13-bit signed
-    fn y_unscaled(&self) -> i16 {
+    pub fn y_unscaled(&self) -> i16 {
         (self.y as i16) >> 3
     }
 
     /// 15-bit signed — data sits in bits 15:1
-    fn z_unscaled(&self) -> i16 {
+    pub fn z_unscaled(&self) -> i16 {
         (self.z as i16) >> 1
     }
 
@@ -257,6 +297,7 @@ impl MagnetometerReading {
             z: compensate_z(raw.z_unscaled(), raw.rhall_unscaled(), trim),
         })
     }
+
 }
 
 struct TrimX1Y1 {

@@ -106,64 +106,78 @@ pub async fn startup(spawner: Spawner) {
     accelerometer.configure_wake_on_movement(0x02, 0x20).await;
 
     loop{
-    accelerometer.clear_wake_source().await;
+    // accelerometer.clear_wake_source().await;
 
 
 
-    let soc = match max17048.soc().await {
-        Ok(soc) => soc,
-        Err(e) => {
-            error!("Failed to read state of charge: {:?}", e);
-            0
-        }
-    };
-    info!("State of charge: {}%", soc);
-    let is_charging = match max17048.charge_rate().await {
-        Ok(rate) => {
-            info!("Charge rate: {}%/hr", rate);
-            rate > 0.0
-        },
-        Err(e) => {
-            error!("Failed to read charge rate: {:?}", e);
-            false
-        }
-    };
-    info!("Is charging: {}", is_charging);
+    // let soc = match max17048.soc().await {
+    //     Ok(soc) => soc,
+    //     Err(e) => {
+    //         error!("Failed to read state of charge: {:?}", e);
+    //         0
+    //     }
+    // };
+    // info!("State of charge: {}%", soc);
+    // let is_charging = match max17048.charge_rate().await {
+    //     Ok(rate) => {
+    //         info!("Charge rate: {}%/hr", rate);
+    //         rate > 0.0
+    //     },
+    //     Err(e) => {
+    //         error!("Failed to read charge rate: {:?}", e);
+    //         false
+    //     }
+    // };
+    // info!("Is charging: {}", is_charging);
 
-    let (temp_reading, humidity_reading) = match temp_senor.read_temperature(temp_sensor::TempSensorPowerMode::LPM3).await {
-        Ok(r) => {
-            // info!("Temperature: {}°C, Humidity: {}%", r.temperature, r.humidity);
-            let mut temp: String<24> = String::new();
-            core::write!(temp, "Temp: {:.1}C", r.temperature).unwrap();
-            let mut humidity: String<24> = String::new();
-            core::write!(humidity, "Humidity: {:.1}%", r.humidity).unwrap();
-            (Some(temp), Some(humidity))
-        },
-        Err(e) => {
-            error!("{:?}",defmt::Debug2Format(&e));
-            let err_string:String<24>  = String::from_str("Temp Senor Error").expect("error making error string");
-            (Some(err_string), None)
-        },
-    };
-    let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
+    // let (temp_reading, humidity_reading) = match temp_senor.read_temperature(temp_sensor::TempSensorPowerMode::LPM3).await {
+    //     Ok(r) => {
+    //         // info!("Temperature: {}°C, Humidity: {}%", r.temperature, r.humidity);
+    //         let mut temp: String<24> = String::new();
+    //         core::write!(temp, "Temp: {:.1}C", r.temperature).unwrap();
+    //         let mut humidity: String<24> = String::new();
+    //         core::write!(humidity, "Humidity: {:.1}%", r.humidity).unwrap();
+    //         (Some(temp), Some(humidity))
+    //     },
+    //     Err(e) => {
+    //         error!("{:?}",defmt::Debug2Format(&e));
+    //         let err_string:String<24>  = String::from_str("Temp Senor Error").expect("error making error string");
+    //         (Some(err_string), None)
+    //     },
+    // };
+    // let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
 
-    let accel = accelerometer.acceleration_reading().await.expect("failed to take accel reading");
-    let mag = magnetometer.read_direction().await.expect("failed to take mag reading");
-    let heading = Heading::new(&accel, &mag);
-    let mut heading_s: String<24> = String::new();
-    core::write!(heading_s, "{:?}", heading).unwrap();
+    // let accel = accelerometer.acceleration_reading().await.expect("failed to take accel reading");
+    // let mag = magnetometer.read_direction().await.expect("failed to take mag reading");
+    // let heading = Heading::new(&accel, &mag);
+    // let mut heading_s: String<24> = String::new();
+    // core::write!(heading_s, "Heading: {:?}", heading).unwrap();
     
-    let display_info = StatusScreen{ 
-        battery: battery_level, 
-        message: [
-            temp_reading.clone(),
-            humidity_reading.clone(),
-            Some(heapless::String::<24>::from_str("Updated!").expect("could not make heapless string")),
-            Some(heading_s),
-            None
-    ]};
-    let _ = display.show_message(display_info).await;
+    // let display_info = StatusScreen{ 
+    //     battery: battery_level, 
+    //     message: [
+    //         temp_reading.clone(),
+    //         humidity_reading.clone(),
+    //         Some(heapless::String::<24>::from_str("Updated!").expect("could not make heapless string")),
+    //         Some(heading_s),
+    //         None
+    // ]};
+    // let _ = display.show_message(display_info).await;
     
+
+    // match accelerometer.read_orientation().await {
+    //     Ok(orientation) => info!("Orientation: {:?}", orientation),
+    //     Err(e) => error!("Error"),
+    // }
+    match magnetometer.read_raw().await {
+        Ok(reading) => info!(
+            "X: {}, Y: {}, Z: {}",
+            reading.x_unscaled(),
+            reading.y_unscaled(),
+            reading.z_unscaled()
+        ),
+        Err(e) => error!("Error"),
+    }
     embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
     
 
