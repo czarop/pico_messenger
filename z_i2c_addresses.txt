@@ -2,5 +2,5 @@
 0x3c = display
 0x44 = temp sensor
 0x36 = battery sensor
-0x10 = magnetometer
+0x13 = magnetometer
 0x76 = altimeter

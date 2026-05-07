@@ -1,6 +1,7 @@
-use crate::accelerometer::Accelerometer;
-use crate::battery_meter::BatteryLevel;
+
 use crate::display::screen::{self, StatusScreen};
+use crate::sensors::heading::Heading;
+use crate::sensors::{accelerometer, battery_meter, magnetometer, temp_sensor};
 use crate::state::{EmbassyStorage, load_state};
 use heapless::String;
 use core::fmt::Write;
@@ -87,14 +88,19 @@ pub async fn startup(spawner: Spawner) {
         CriticalSectionRawMutex,
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
     > = i2c::I2cDevice::new(i2c_bus);
+    let i2c_for_magnetometer: i2c::I2cDevice<
+        '_,
+        CriticalSectionRawMutex,
+        I2c<'static, I2C0, embassy_rp::i2c::Async>,
+    > = i2c::I2cDevice::new(i2c_bus);
 
-    let mut accelerometer = Accelerometer::new(p.PIN_15, i2c_for_accelerometer).await;
+    let mut accelerometer = accelerometer::Accelerometer::new(p.PIN_15, i2c_for_accelerometer).await;
     let mut display = screen::Display::new(i2c_for_display).await;
-    let mut temp_senor = crate::temp_sensor::TempSensor::new(i2c_for_temp_senor);
-
+    let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_senor);
+    let mut magnetometer = magnetometer::Magnetometer::new(i2c_for_magnetometer);
     
 
-    let mut max17048 = crate::battery_meter::Max17048::new(i2c_for_battery_monitor);
+    let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
     
 
     accelerometer.configure_wake_on_movement(0x02, 0x20).await;
@@ -124,7 +130,7 @@ pub async fn startup(spawner: Spawner) {
     };
     info!("Is charging: {}", is_charging);
 
-    let (temp_reading, humidity_reading) = match temp_senor.read_temperature(crate::temp_sensor::TempSensorPowerMode::LPM3).await {
+    let (temp_reading, humidity_reading) = match temp_senor.read_temperature(temp_sensor::TempSensorPowerMode::LPM3).await {
         Ok(r) => {
             // info!("Temperature: {}°C, Humidity: {}%", r.temperature, r.humidity);
             let mut temp: String<24> = String::new();
@@ -139,7 +145,13 @@ pub async fn startup(spawner: Spawner) {
             (Some(err_string), None)
         },
     };
-    let battery_level = BatteryLevel::from_soc(soc, is_charging);
+    let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
+
+    let accel = accelerometer.acceleration_reading().await.expect("failed to take accel reading");
+    let mag = magnetometer.read_direction().await.expect("failed to take mag reading");
+    let heading = Heading::new(&accel, &mag);
+    let mut heading_s: String<24> = String::new();
+    core::write!(heading_s, "{:?}", heading).unwrap();
     
     let display_info = StatusScreen{ 
         battery: battery_level, 
@@ -147,36 +159,29 @@ pub async fn startup(spawner: Spawner) {
             temp_reading.clone(),
             humidity_reading.clone(),
             Some(heapless::String::<24>::from_str("Updated!").expect("could not make heapless string")),
-            None,
+            Some(heading_s),
             None
     ]};
     let _ = display.show_message(display_info).await;
     
-    embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
+    embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
     
 
-    // info!("Entering low power mode, waiting for motion...");
-    let display_info = StatusScreen{ 
-        battery: battery_level, 
-        message: [
-            temp_reading,
-            humidity_reading,
-            Some(heapless::String::<24>::from_str("Shake to update").expect("could not make heapless string")),
-            None,
-            None
-    ]};
-    let _ = display.show_message(display_info).await;
-    // embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
-    accelerometer.wait_for_motion().await;
 
-    // let _ = display.show_message(Some("woken..."), Some("I woke up!"), None, battery_level).await;
-    // embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
-    // display.clear().await;
-    // display.turn_display_off().await;
+    // let display_info = StatusScreen{ 
+    //     battery: battery_level, 
+    //     message: [
+    //         temp_reading,
+    //         humidity_reading,
+    //         Some(heapless::String::<24>::from_str("Shake to update").expect("could not make heapless string")),
+    //         None,
+    //         None
+    // ]};
+    // let _ = display.show_message(display_info).await;
 
-    // embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
+    // accelerometer.wait_for_motion().await;
 
-    // embassy_time::Timer::after(embassy_time::Duration::from_secs(5)).await;
+    
 
     }
 }

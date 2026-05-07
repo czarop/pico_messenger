@@ -11,7 +11,7 @@ use embedded_graphics::{
 
 use oled_async::{Builder, prelude::*};
 
-use crate::{battery_meter::BatteryLevel, display::battery::BatteryIcon};
+use crate::{sensors::battery_meter::BatteryLevel, display::battery::BatteryIcon};
 
 pub struct StatusScreen {
     pub battery: BatteryLevel,

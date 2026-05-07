@@ -7,7 +7,7 @@ use embedded_graphics::{
 
 use embedded_graphics::prelude::Primitive;
 
-use crate::battery_meter::BatteryLevel;
+use crate::sensors::battery_meter::BatteryLevel;
 
 pub struct BatteryIcon<'a> {
     pub level: &'a BatteryLevel,

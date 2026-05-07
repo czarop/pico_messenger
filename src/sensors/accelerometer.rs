@@ -1,12 +1,14 @@
 use defmt::{error, info};
+use embassy_embedded_hal::shared_bus::I2cDeviceError;
+use embassy_rp::Peri;
 use embassy_rp::clocks::dormant_sleep;
 use embassy_rp::gpio::{DormantWakeConfig, Input};
 use embassy_rp::i2c::I2c;
 use embassy_rp::peripherals::{I2C0, PIN_15};
-
-use embassy_rp::Peri;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use lis2dw12_i2c::Register;
+use micromath::F32Ext;
+use thiserror::Error;
 
 type AccelerometerI2C = lis2dw12_i2c::Lis2dw12<
     embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice<
@@ -110,5 +112,54 @@ impl Accelerometer {
         drop(dormant); // re-enables clocks, restores GPIO state
     }
 
+    pub async fn acceleration_reading(
+        &mut self,
+    ) -> Result<AccelerometerReading, AccelerometerError<I2cDeviceError<embassy_rp::i2c::Error>>>
+    {
+        let res = self.inner.acc_gs().await?.into();
 
+        Ok(res)
+    }
+}
+
+pub struct AccelerometerReading {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+impl AccelerometerReading {
+    pub fn pitch(&self) -> f32 {
+        f32::atan2(-self.x, f32::sqrt(self.y * self.y + self.z * self.z))
+    }
+
+    pub fn roll(&self) -> f32 {
+        f32::atan2(self.y, self.z)
+    }
+}
+
+impl From<(f32, f32, f32)> for AccelerometerReading {
+    fn from(value: (f32, f32, f32)) -> Self {
+        AccelerometerReading {
+            x: value.0,
+            y: value.1,
+            z: value.2,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum AccelerometerError<E: core::fmt::Debug> {
+    #[error("I2C error: {0:?}")]
+    I2cError(E),
+    #[error("Invalid sensor data: {0}")]
+    InvalidData(&'static str),
+    #[error("Data not ready")]
+    StaleData,
+}
+
+impl<E: core::fmt::Debug> From<E> for AccelerometerError<E> {
+    fn from(e: E) -> Self {
+        AccelerometerError::I2cError(e)
+    }
 }
