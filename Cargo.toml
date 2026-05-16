@@ -7,12 +7,12 @@ license = "MIT or Apache-2.0"
 
 [build-dependencies]
 regex = "1.11.0"
-dotenvy_macro = "0.15"
-dotenvy = "0.15"
+# dotenvy_macro = "0.15"
+# dotenvy = "0.15"
 
 [dependencies]
 # cortex-m = "0.7"
-cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m = "0.7"
 cortex-m-rt = "0.7"
 defmt = "1"
 defmt-rtt = "1"
@@ -21,7 +21,7 @@ defmt-rtt = "1"
 # cyw43-pio = { version = "0.10" }
 static_cell = "2.1.1"
 portable-atomic = { version = "1", features = ["critical-section"] }
-panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+# panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 embassy-embedded-hal = { version = "0.6.0", features = ["defmt"] }
 # log = "0.4"
 embassy-executor = { version = "0.10.0", features = [
@@ -36,10 +36,10 @@ embassy-time = { version = "0.5.1", features = [
 ] }
 embassy-rp = { version = "0.10.0", features = [
     "defmt",
-    # "unstable-pac",
     "time-driver",
-    # "critical-section-impl",
-    "rp2040",
+    # "rp2040",
+    "rp235xa",
+    "critical-section-impl"
 ] }
 
 
@@ -94,8 +94,8 @@ micromath = "2"
 embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
 embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
 embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
-cyw43 = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
-cyw43-pio = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+# cyw43 = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
+# cyw43-pio = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
 embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
 embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
 embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
@@ -103,25 +103,28 @@ embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "24da56
 atat = {git = "https://github.com/FactbirdHQ/atat", rev = "edceb1a"}
 
 
+# # [profile.dev]
+# # opt-level = "s"   # size optimisation even in debug
+# # debug = 2         # reduced debug info (not full=2)
+# # lto = "thin"
+# # codegen-units = 1
 # [profile.dev]
-# opt-level = "s"   # size optimisation even in debug
-# debug = 2         # reduced debug info (not full=2)
-# lto = "thin"
-# codegen-units = 1
-[profile.dev]
-# Increase codegen-units to allow parallel compilation
-codegen-units = 16
-# Lower opt-level to 0 (no optimization, fastest compile)
-opt-level = "s"
-# LTO off is critical for fast linking
-lto = false
-# Keep debug info on for step-through debugging
-debug = 2
-incremental = true
+# # Increase codegen-units to allow parallel compilation
+# codegen-units = 16
+# # Lower opt-level to 0 (no optimization, fastest compile)
+# opt-level = "s"
+# # LTO off is critical for fast linking
+# lto = false
+# # Keep debug info on for step-through debugging
+# debug = 2
+# incremental = true
 
-[profile.dev.build-override]
-codegen-units = 8
-debug = false
-debug-assertions = false
-opt-level = 0
-overflow-checks = false
+# [profile.dev.build-override]
+# codegen-units = 8
+# debug = false
+# debug-assertions = false
+# opt-level = 0
+# overflow-checks = false
+
+[target.'cfg( target_arch = "arm" )'.dependencies]
+panic-probe = { version = "1", features = ["print-defmt"] }

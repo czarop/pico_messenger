@@ -7,6 +7,7 @@ const OPERATION_MODE_REGISTER: u8 = 0x4C;
 const POWER_MODE_REGISTER: u8 = 0x4B;
 #[allow(dead_code)]
 const READ_REGISTER: u8 = 0x48;
+
 const MAG_OVERFLOW_XY: i16 = -4096;
 const MAG_OVERFLOW_OUTPUT: i16 = -32768;
 const MAG_OVERFLOW_ADCVAL_ZAXIS_HALL: i16 = -16384;
@@ -153,20 +154,24 @@ where
                 self.trim_data = Some(trim_data);
             }
             self.power_state = PowerMode::Sleep;
+            // set to higher accuracy
+            self.i2c.write(BMM150_ADDR, &[0x51, 0x0F]).await?; // 15 XY reps
+            self.i2c.write(BMM150_ADDR, &[0x52, 0x1B]).await?; // 27 Z reps
         }
         // default singular read
         self.i2c
             .write(BMM150_ADDR, &OperationMode::Forced.command_default_reg())
             .await?;
-        // wait for data to be ready
+        // wait for data to be ready - this is for extended accuracy
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(30)).await;
         loop {
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
             self.i2c
                 .write_read(BMM150_ADDR, &[0x42], &mut self.recv_buffer)
                 .await?;
             if self.recv_buffer[6] & 0x01 == 1 {
                 break;
             }
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(2)).await;
         }
 
         let raw: RawReading = self.recv_buffer.into();
@@ -177,6 +182,9 @@ where
     }
 
     pub async fn calibrate(&mut self) {
+
+    info!("start cal");
+
     let mut min_x = i16::MAX;
     let mut max_x = i16::MIN;
     let mut min_y = i16::MAX;
@@ -184,7 +192,7 @@ where
     let mut min_z = i16::MAX;
     let mut max_z = i16::MIN;
 
-    let end = Instant::now() + Duration::from_secs(30);
+    let end = Instant::now() + Duration::from_secs(60);
     
     while Instant::now() < end {
         if let Ok(reading) = self.read_raw().await {
@@ -291,10 +299,13 @@ impl MagnetometerReading {
         if !raw.is_ready() {
             return Err(MagnetometerError::StaleData);
         }
+        let x = compensate_x(raw.x_unscaled(), raw.rhall_unscaled(), trim);
+        let y = compensate_y(raw.y_unscaled(), raw.rhall_unscaled(), trim);
+        let z = compensate_z(raw.z_unscaled(), raw.rhall_unscaled(), trim);
         Ok(Self {
-            x: compensate_x(raw.x_unscaled(), raw.rhall_unscaled(), trim),
-            y: compensate_y(raw.y_unscaled(), raw.rhall_unscaled(), trim),
-            z: compensate_z(raw.z_unscaled(), raw.rhall_unscaled(), trim),
+            x,
+            y,
+            z,
         })
     }
 

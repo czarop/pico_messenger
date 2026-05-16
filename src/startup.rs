@@ -11,7 +11,7 @@ use embassy_embedded_hal::shared_bus::asynch::i2c;
 use embassy_executor::Spawner;
 
 use embassy_rp::i2c::I2c;
-use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0};
+use embassy_rp::peripherals::{DMA_CH0, I2C0, I2C1, PIO0};
 
 use embassy_rp::pio::InterruptHandler;
 use embassy_rp::{bind_interrupts, dma};
@@ -26,14 +26,18 @@ bind_interrupts!(pub struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
     I2C0_IRQ => embassy_rp::i2c::InterruptHandler<I2C0>;
+    I2C1_IRQ => embassy_rp::i2c::InterruptHandler<I2C1>;
 });
 
 static STORAGE: StaticCell<EmbassyStorage> = StaticCell::new();
 static ALLOC: StaticCell<Allocation<EmbassyStorage>> = StaticCell::new();
 static FS: StaticCell<Mutex<ThreadModeRawMutex, Filesystem<'static, EmbassyStorage>>> =
     StaticCell::new();
-static I2C_BUS: StaticCell<
+static I2C0_BUS: StaticCell<
     Mutex<CriticalSectionRawMutex, I2c<'static, I2C0, embassy_rp::i2c::Async>>,
+> = StaticCell::new();
+static I2C1_BUS: StaticCell<
+    Mutex<CriticalSectionRawMutex, I2c<'static, I2C1, embassy_rp::i2c::Async>>,
 > = StaticCell::new();
 
 pub async fn startup(spawner: Spawner) {
@@ -60,142 +64,181 @@ pub async fn startup(spawner: Spawner) {
 
     info!("on startup message count was: {}", state.msg_count);
 
-    let i2c = I2c::new_async(
+    let i2c0 = I2c::new_async(
         p.I2C0,
         p.PIN_21,
         p.PIN_20,
         Irqs,
         embassy_rp::i2c::Config::default(),
     );
-    let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
+    let i2c0_bus = I2C0_BUS.init(Mutex::new(i2c0));
+    let i2c1 = I2c::new_async(
+        p.I2C1,
+        p.PIN_7,
+        p.PIN_6,
+        Irqs,
+        embassy_rp::i2c::Config::default(),
+    );
+    let i2c1_bus = I2C1_BUS.init(Mutex::new(i2c1));
+
+    
     let i2c_for_accelerometer: i2c::I2cDevice<
         '_,
         CriticalSectionRawMutex,
-        I2c<'static, I2C0, embassy_rp::i2c::Async>,
-    > = i2c::I2cDevice::new(i2c_bus);
+        I2c<'static, I2C1, embassy_rp::i2c::Async>,
+    > = i2c::I2cDevice::new(i2c1_bus);
     let i2c_for_display: i2c::I2cDevice<
         '_,
         CriticalSectionRawMutex,
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
-    > = i2c::I2cDevice::new(i2c_bus);
+    > = i2c::I2cDevice::new(i2c0_bus);
     let i2c_for_battery_monitor: i2c::I2cDevice<
         '_,
         CriticalSectionRawMutex,
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
-    > = i2c::I2cDevice::new(i2c_bus);
+    > = i2c::I2cDevice::new(i2c0_bus);
     let i2c_for_temp_senor: i2c::I2cDevice<
         '_,
         CriticalSectionRawMutex,
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
-    > = i2c::I2cDevice::new(i2c_bus);
+    > = i2c::I2cDevice::new(i2c0_bus);
     let i2c_for_magnetometer: i2c::I2cDevice<
         '_,
         CriticalSectionRawMutex,
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
-    > = i2c::I2cDevice::new(i2c_bus);
+    > = i2c::I2cDevice::new(i2c0_bus);
 
-    let mut accelerometer = accelerometer::Accelerometer::new(p.PIN_15, i2c_for_accelerometer).await;
+    let mut accelerometer = accelerometer::Accelerometer::new(p.PIN_23, i2c_for_accelerometer).await;
     let mut display = screen::Display::new(i2c_for_display).await;
     let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_senor);
     let mut magnetometer = magnetometer::Magnetometer::new(i2c_for_magnetometer);
-    
 
+
+
+    use embedded_hal_async::i2c::I2c as _;
+    for addr in 0x08u8..=0x77u8 {
+    let mut buf = [0u8; 1];
+    match i2c0_bus.lock().await.write_read(addr, &[0x0F], &mut buf).await {
+        Ok(_) => info!("device at {:#04x}: {:#04x}", addr, buf[0]),
+        Err(_) => {}
+    }
+}
+    
+    
     let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
     
+    // magnetometer.calibrate().await;
 
-    accelerometer.configure_wake_on_movement(0x02, 0x20).await;
+
+    for addr in 0x08u8..=0x77u8 {
+    let mut buf = [0u8; 1];
+    match i2c0_bus.lock().await.write_read(addr, &[0x0F], &mut buf).await {
+        Ok(_) => info!("device at {:#04x}: {:#04x}", addr, buf[0]),
+        Err(_) => {}
+    }
+}
 
     loop{
-    // accelerometer.clear_wake_source().await;
+    accelerometer.clear_wake_source().await;
+    // let accel = accelerometer.acceleration_reading().await.expect("failed to read accel");
+    // info!("accel x: {}, y: {}, z: {}", accel.x, accel.y, accel.z);
 
 
 
-    // let soc = match max17048.soc().await {
-    //     Ok(soc) => soc,
-    //     Err(e) => {
-    //         error!("Failed to read state of charge: {:?}", e);
-    //         0
-    //     }
-    // };
+    let soc = match max17048.soc().await {
+        Ok(soc) => soc,
+        Err(e) => {
+            // error!("Failed to read state of charge: {:?}", e);
+            0
+        }
+    };
     // info!("State of charge: {}%", soc);
-    // let is_charging = match max17048.charge_rate().await {
-    //     Ok(rate) => {
-    //         info!("Charge rate: {}%/hr", rate);
-    //         rate > 0.0
-    //     },
-    //     Err(e) => {
-    //         error!("Failed to read charge rate: {:?}", e);
-    //         false
-    //     }
-    // };
+    let is_charging = match max17048.charge_rate().await {
+        Ok(rate) => {
+            info!("Charge rate: {}%/hr", rate);
+            rate > 0.0
+        },
+        Err(e) => {
+            // error!("Failed to read charge rate: {:?}", e);
+            false
+        }
+    };
     // info!("Is charging: {}", is_charging);
 
-    // let (temp_reading, humidity_reading) = match temp_senor.read_temperature(temp_sensor::TempSensorPowerMode::LPM3).await {
-    //     Ok(r) => {
-    //         // info!("Temperature: {}°C, Humidity: {}%", r.temperature, r.humidity);
-    //         let mut temp: String<24> = String::new();
-    //         core::write!(temp, "Temp: {:.1}C", r.temperature).unwrap();
-    //         let mut humidity: String<24> = String::new();
-    //         core::write!(humidity, "Humidity: {:.1}%", r.humidity).unwrap();
-    //         (Some(temp), Some(humidity))
-    //     },
-    //     Err(e) => {
-    //         error!("{:?}",defmt::Debug2Format(&e));
-    //         let err_string:String<24>  = String::from_str("Temp Senor Error").expect("error making error string");
-    //         (Some(err_string), None)
-    //     },
-    // };
-    // let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
+    let (temp_reading, humidity_reading) = match temp_senor.read_temperature(temp_sensor::TempSensorPowerMode::LPM3).await {
+        Ok(r) => {
+            // info!("Temperature: {}°C, Humidity: {}%", r.temperature, r.humidity);
+            let mut temp: String<24> = String::new();
+            core::write!(temp, "Temp: {:.1}C", r.temperature).unwrap();
+            let mut humidity: String<24> = String::new();
+            core::write!(humidity, "Humidity: {:.1}%", r.humidity).unwrap();
+            (Some(temp), Some(humidity))
+        },
+        Err(e) => {
+            error!("{:?}",defmt::Debug2Format(&e));
+            let err_string:String<24>  = String::from_str("Temp Senor Error").expect("error making error string");
+            (Some(err_string), None)
+        },
+    };
+    let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
+    accelerometer.switch_to_on_demand_mode().await.expect("accel failed to switch to on demand mode");
+    let accel = accelerometer.acceleration_reading().await.expect("failed to take accel reading");
 
-    // let accel = accelerometer.acceleration_reading().await.expect("failed to take accel reading");
-    // let mag = magnetometer.read_direction().await.expect("failed to take mag reading");
-    // let heading = Heading::new(&accel, &mag);
-    // let mut heading_s: String<24> = String::new();
-    // core::write!(heading_s, "Heading: {:?}", heading).unwrap();
+    let raw_mag = magnetometer.read_raw().await.expect("failed to take mag reading");
+    let heading = Heading::new_from_raw(&accel, &raw_mag);
+
+    let mut heading_s: String<24> = String::new();
+    core::write!(heading_s, "Heading: {:?}", heading).unwrap();
     
-    // let display_info = StatusScreen{ 
-    //     battery: battery_level, 
-    //     message: [
-    //         temp_reading.clone(),
-    //         humidity_reading.clone(),
-    //         Some(heapless::String::<24>::from_str("Updated!").expect("could not make heapless string")),
-    //         Some(heading_s),
-    //         None
-    // ]};
-    // let _ = display.show_message(display_info).await;
+    let display_info = StatusScreen{ 
+        battery: battery_level, 
+        message: [
+            temp_reading.clone(),
+            humidity_reading.clone(),
+            Some(heapless::String::<24>::from_str("Updated!").expect("could not make heapless string")),
+            Some(heading_s),
+            None
+    ]};
+    let _ = display.show_message(display_info).await;
     
 
     // match accelerometer.read_orientation().await {
     //     Ok(orientation) => info!("Orientation: {:?}", orientation),
     //     Err(e) => error!("Error"),
     // }
-    match magnetometer.read_raw().await {
-        Ok(reading) => info!(
-            "X: {}, Y: {}, Z: {}",
-            reading.x_unscaled(),
-            reading.y_unscaled(),
-            reading.z_unscaled()
-        ),
-        Err(e) => error!("Error"),
-    }
-    embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+
+
+
+    // magnetometer.calibrate().await;
+    // match magnetometer.read_raw().await {
+    //     Ok(reading) => info!(
+    //         "X: {}, Y: {}, Z: {}",
+    //         reading.x_unscaled(),
+    //         reading.y_unscaled(),
+    //         reading.z_unscaled()
+    //     ),
+    //     Err(e) => error!("Error"),
+    // }
+    embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
     
 
 
-    // let display_info = StatusScreen{ 
-    //     battery: battery_level, 
-    //     message: [
-    //         temp_reading,
-    //         humidity_reading,
-    //         Some(heapless::String::<24>::from_str("Shake to update").expect("could not make heapless string")),
-    //         None,
-    //         None
-    // ]};
-    // let _ = display.show_message(display_info).await;
-
+    let display_info = StatusScreen{ 
+        battery: battery_level, 
+        message: [
+            temp_reading,
+            humidity_reading,
+            Some(heapless::String::<24>::from_str("Shake to update").expect("could not make heapless string")),
+            None,
+            None
+    ]};
+    let _ = display.show_message(display_info).await;
+    
+    // accelerometer.switch_to_low_power_mode().await.expect("accel failed to switch to low power mode");
+    // accelerometer.configure_wake_on_movement(0x02, 0x20).await;
     // accelerometer.wait_for_motion().await;
 
-    
+
 
     }
 }

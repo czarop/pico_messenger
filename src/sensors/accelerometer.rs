@@ -4,7 +4,7 @@ use embassy_rp::Peri;
 use embassy_rp::clocks::dormant_sleep;
 use embassy_rp::gpio::{DormantWakeConfig, Input};
 use embassy_rp::i2c::I2c;
-use embassy_rp::peripherals::{I2C0, PIN_15};
+use embassy_rp::peripherals::{I2C1, PIN_23};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use lis2dw12_i2c::Register;
 use micromath::F32Ext;
@@ -14,7 +14,7 @@ type AccelerometerI2C = lis2dw12_i2c::Lis2dw12<
     embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice<
         'static,
         CriticalSectionRawMutex,
-        I2c<'static, I2C0, embassy_rp::i2c::Async>,
+        I2c<'static, I2C1, embassy_rp::i2c::Async>,
     >,
     embassy_time::Delay,
 >;
@@ -22,15 +22,16 @@ type AccelerometerI2C = lis2dw12_i2c::Lis2dw12<
 pub struct Accelerometer {
     inner: AccelerometerI2C,
     int_pin: Input<'static>,
+    mode: Mode
 }
 
 impl Accelerometer {
     pub async fn new(
-        int_pin: Peri<'static, PIN_15>,
+        int_pin: Peri<'static, PIN_23>,
         i2c_driver: embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice<
             'static,
             CriticalSectionRawMutex,
-            I2c<'static, I2C0, embassy_rp::i2c::Async>,
+            I2c<'static, I2C1, embassy_rp::i2c::Async>,
         >,
     ) -> Self {
         let delay = embassy_time::Delay;
@@ -38,10 +39,11 @@ impl Accelerometer {
             embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice<
                 '_,
                 CriticalSectionRawMutex,
-                I2c<'static, I2C0, embassy_rp::i2c::Async>,
+                I2c<'static, I2C1, embassy_rp::i2c::Async>,
             >,
             embassy_time::Delay,
         > = lis2dw12_i2c::Lis2dw12::new_with_sa0_gnd(i2c_driver, delay);
+
 
         match accel
             .write_reg(
@@ -59,10 +61,53 @@ impl Accelerometer {
             Err(e) => error!("Failed to initialize accelerometer: {:?}", e),
         };
 
+        
         Self {
             inner: accel,
             int_pin: Input::new(int_pin, embassy_rp::gpio::Pull::Down),
+            mode: Mode::LowPower
         }
+    }
+
+    pub async fn switch_to_low_power_mode(&mut self) -> Result<(),AccelerometerError<I2cDeviceError<embassy_rp::i2c::Error>>> {
+        match self.inner
+            .write_reg(
+                lis2dw12_i2c::Register::Control1,
+                lis2dw12_i2c::registers::ControlReg1::new(
+                    lis2dw12_i2c::Control1LowPowerMode::LowPower2,
+                    lis2dw12_i2c::Control1ModeSelect::LowPower,
+                    lis2dw12_i2c::Control1DataRate::Hi12p5Lo1p6Hz,
+                )
+                .into(),
+            )
+            .await
+        {
+            Ok(_) => {
+                self.mode = Mode::LowPower;
+                return Ok(())
+            },
+            Err(e) => return Err(e.into()),
+        };
+    }
+
+    pub async fn switch_to_on_demand_mode(&mut self) -> Result<(),AccelerometerError<I2cDeviceError<embassy_rp::i2c::Error>>> {
+       
+        match self.inner
+            .write_reg(
+                Register::Control1, lis2dw12_i2c::ControlReg1::new(
+   lis2dw12_i2c::Control1LowPowerMode::LowPower2,
+   lis2dw12_i2c::Control1ModeSelect::OnDemand,
+   lis2dw12_i2c::Control1DataRate::HiLo200Hz).into()
+            )
+            .await
+        {
+            Ok(_) => {
+                self.mode = Mode::OnDemand;
+                
+                return Ok(())
+            },
+            Err(e) => return Err(e.into()),
+        };
     }
 
     pub async fn configure_wake_on_movement(&mut self, threshold: u8, duration: u8) {
@@ -116,8 +161,15 @@ impl Accelerometer {
         &mut self,
     ) -> Result<AccelerometerReading, AccelerometerError<I2cDeviceError<embassy_rp::i2c::Error>>>
     {
-        let res = self.inner.acc_gs().await?.into();
+        if let Mode::OnDemand = self.mode {
+            self.inner.write_reg(Register::Control3, 0x01).await?;
+            // small delay for measurement to complete
+            embassy_time::Timer::after_millis(5).await;
+        }
 
+        let res: AccelerometerReading = self.inner.acc_gs().await?.into();
+        info!("accel g: x {}, y {}, z {}", res.x, res.y, res.z);
+        info!("pitch: {}, roll: {}", res.pitch(), res.roll());
         Ok(res)
     }
 
@@ -125,6 +177,8 @@ impl Accelerometer {
         let val = self.inner.read_reg(Register::SixDimSource).await?;
         Ok(Orientation::from_reg(val))
     }
+
+    
 
     
 }
@@ -196,4 +250,9 @@ impl Orientation {
             _ => Orientation::Unknown,
         }
     }
+}
+
+enum Mode{
+    LowPower,
+    OnDemand
 }
