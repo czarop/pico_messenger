@@ -1,14 +1,8 @@
-use atat::atat_derive::{AtatEnum, AtatUrc};
-
-#[derive(Clone, AtatUrc)]
-pub enum GNSSUrc {
-    #[at_urc("#GNSSINIT")]
-    Status(GNSSInitMessage),
-}
+use atat::atat_derive::AtatEnum;
 
 #[derive(Clone, AtatEnum)]
 #[repr(u8)]
-pub enum GNSSInitMessage {
+pub enum GnssInitUrc {
     NotStarted = 0,
     Starting = 1,
     Ready = 2,
