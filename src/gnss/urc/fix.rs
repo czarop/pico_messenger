@@ -1,6 +1,7 @@
+use atat::atat_derive::AtatEnum;
 use serde::Deserialize;
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum GnssValidity {
     Valid,
     Invalid(u8),
@@ -56,7 +57,7 @@ impl From<u8> for GnssValidity {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GnssPosition {
     pub week_number: u16,
     pub time_of_week: u32,
@@ -66,7 +67,7 @@ pub struct GnssPosition {
     pub accuracy: f32,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GnssAccuracy {
     pub std_dev_altitude: f32,
     pub hdop: f32,
@@ -74,14 +75,54 @@ pub struct GnssAccuracy {
     pub pdop: f32,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GnssLocation {
     pub position: GnssPosition,
-    pub accuracy: Option<GnssAccuracy>,
+    pub accuracy: GnssAccuracy,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum GnssFixUrc {
     Searching(GnssValidity),
     Fix(GnssLocation),
+}
+
+impl GnssFixUrc {
+    pub fn from_raw(raw: GnssFixUrcRaw) -> Option<Self> {
+        match raw.validity {
+            0 => {
+                Some(Self::Fix(GnssLocation {
+                    position: GnssPosition {
+                        week_number: raw.week_number?,
+                        time_of_week: raw.time_of_week?,
+                        latitude: raw.latitude?,
+                        longitude: raw.longitude?,
+                        altitude: raw.altitude?,
+                        accuracy: raw.accuracy?,
+                    },
+                    accuracy: GnssAccuracy { 
+                        std_dev_altitude: raw.std_dev_altitude?, 
+                        hdop: raw.hdop?, 
+                        gdop: raw.gdop?, 
+                        pdop: raw.pdop? }
+                }))
+            },
+            v => Some(Self::Searching(GnssValidity::from(v))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct GnssFixUrcRaw {
+    pub validity: u8,
+    pub week_number: Option<u16>,
+    pub time_of_week: Option<u32>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub altitude: Option<f32>,
+    pub accuracy: Option<f32>,
+    pub std_dev_altitude: Option<f32>,
+    pub hdop: Option<f32>,
+    pub gdop: Option<f32>,
+    pub pdop: Option<f32>,
 }
