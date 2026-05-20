@@ -132,11 +132,13 @@ pub async fn startup(spawner: Spawner) {
 
     for addr in 0x08u8..=0x77u8 {
     let mut buf = [0u8; 1];
-    match i2c0_bus.lock().await.write_read(addr, &[0x0F], &mut buf).await {
+    match i2c1_bus.lock().await.write_read(addr, &[0x0F], &mut buf).await {
         Ok(_) => info!("device at {:#04x}: {:#04x}", addr, buf[0]),
         Err(_) => {}
     }
 }
+
+info!("entering loop");
 
     loop{
     

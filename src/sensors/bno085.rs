@@ -29,6 +29,7 @@ where
     }
 
     pub async fn heading(&mut self) -> Result<[f32; 4], WrapperError<Error<CommE, ()>>> {
+        defmt::info!("starting");
         let handled = self
             .inner
             .handle_all_messages(&mut embassy_time::Delay, 150)
