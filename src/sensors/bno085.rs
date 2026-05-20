@@ -1,14 +1,26 @@
 use bno080::Error;
 use bno080::interface::i2c_async::I2cInterfaceAsync;
-use bno080::wrapper_async::{BNO080Async, WrapperError};
+use bno080::wrapper_async::{BNO085Async, WrapperError};
 use embassy_rp::Peri;
 use embassy_rp::gpio::Input;
 use embassy_rp::peripherals::PIN_3;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::{Receiver, Sender};
+
+use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
+use embassy_rp::i2c::{I2c, Async};
+use embassy_rp::peripherals::I2C1;
 
 use crate::sensors::heading::{Heading, HeadingReading};
 
+type ImuI2C = I2cDevice<
+    'static,
+    CriticalSectionRawMutex,
+    I2c<'static, I2C1, Async>,
+>;
+
 pub struct Imu<I2C> {
-    inner: BNO080Async<I2cInterfaceAsync<I2C>>,
+    inner: BNO085Async<I2cInterfaceAsync<I2C>>,
     int_pin: Input<'static>, // is pulled low when the device has new data
 }
 
@@ -20,7 +32,7 @@ where
     pub async fn new(i2c: I2C, int_pin: Peri<'static, PIN_3>) -> Self {
         let mut int_pin = Input::new(int_pin, embassy_rp::gpio::Pull::Up);
         let iface = I2cInterfaceAsync::default(i2c);
-        let mut inner = BNO080Async::new_with_interface(iface);
+        let mut inner = BNO085Async::new_with_interface(iface);
         int_pin.wait_for_low().await;
         inner
             .init(&mut embassy_time::Delay)
@@ -50,8 +62,52 @@ where
         })
     }
 
-    pub async fn wait_for_motion(&mut self) {
+    pub async fn wait_for_motion_dormant(&mut self) {
+        // enable significant motion as wake sensor
+        self.inner.enable_significant_motion_wake().await
+            .expect("failed to enable significant motion");
         
+        // put BNO085 to sleep - significant motion will keep running
+        self.inner.sleep().await
+            .expect("failed to sleep BNO085");
+
+        // dormant sleep RP2350 - wake on H_INTN going low
+        let dormant = self.int_pin.dormant_wake(embassy_rp::gpio::DormantWakeConfig {
+            edge_high: false,
+            edge_low: true,
+            level_high: false,
+            level_low: false,
+        });
+        embassy_rp::clocks::dormant_sleep();
+        drop(dormant);
+
+        // wake BNO085 back up
+        self.inner.wake().await
+            .expect("failed to wake BNO085");
+        
+        // eat the significant motion report
+        self.inner.eat_all_messages(&mut embassy_time::Delay).await;
+    }
+
+    // for testing - keeps clocks running so connected to probe
+    pub async fn wait_for_motion(&mut self) {
+        // enable significant motion as wake sensor
+        self.inner.enable_significant_motion_wake().await
+            .expect("failed to enable significant motion");
+        
+        // put BNO085 to sleep - significant motion will keep running
+        self.inner.sleep().await
+            .expect("failed to sleep BNO085");
+
+        // wait for H_INTN to go low - clocks keep running
+        self.int_pin.wait_for_low().await;
+
+        // wake BNO085 back up
+        self.inner.wake().await
+            .expect("failed to wake BNO085");
+        
+        // eat the significant motion report
+        self.inner.eat_all_messages(&mut embassy_time::Delay).await;
     }
 }
 
@@ -78,6 +134,47 @@ impl<E: core::fmt::Debug> From<WrapperError<Error<E, ()>>> for ImuError<E> {
             WrapperError::InvalidFWVersion(v) => ImuError::InvalidFirmware(v),
             WrapperError::NoDataAvailable => ImuError::NoData,
             _ => ImuError::Unresponsive,
+        }
+    }
+}
+
+pub enum ImuCommand {
+    EnableRotationVector,
+    EnableStepCounter,
+    WaitForMotion,
+    GetHeading,
+    GetStepCount,
+}
+
+pub enum ImuReport {
+    Heading(HeadingReading),
+    StepCount(u16),
+    MotionDetected,
+    Error,
+}
+
+#[embassy_executor::task]
+async fn imu_task(
+    mut imu: Imu<ImuI2C>,
+    receiver: Receiver<'static, CriticalSectionRawMutex, ImuCommand, 4>,
+    sender: Sender<'static, CriticalSectionRawMutex, ImuReport, 4>,
+) {
+    loop {
+        match receiver.receive().await {
+            ImuCommand::GetHeading => {
+                match imu.heading().await {
+                    Ok(h) => sender.send(ImuReport::Heading(h)).await,
+                    Err(_) => sender.send(ImuReport::Error).await,
+                }
+            }
+            ImuCommand::WaitForMotion => {
+                imu.wait_for_motion().await;
+                sender.send(ImuReport::MotionDetected).await;
+            }
+            // etc
+            ImuCommand::EnableRotationVector => todo!(),
+            ImuCommand::EnableStepCounter => todo!(),
+            ImuCommand::GetStepCount => todo!(),
         }
     }
 }
