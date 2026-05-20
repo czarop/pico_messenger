@@ -3,6 +3,7 @@ use crate::display::screen::{self, StatusScreen};
 
 use crate::sensors::{battery_meter, bno085, temp_sensor};
 use crate::state::{EmbassyStorage, load_state};
+use embassy_rp::gpio::Input;
 use heapless::String;
 use core::fmt::Write;
 use core::str::FromStr;
@@ -109,7 +110,7 @@ pub async fn startup(spawner: Spawner) {
 
     let mut display = screen::Display::new(i2c_for_display).await;
     let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_senor);
-    let mut bno085 = bno085::Imu::new(i2c_for_bno085).await;
+    let mut bno085 = bno085::Imu::new(i2c_for_bno085,  p.PIN_3).await;
 
     bno085.enable_rotation_vector(100).await.expect("Failed to enable rotation vector");
 
@@ -184,8 +185,10 @@ info!("entering loop");
    
     let heading = match bno085.heading().await {
         Ok(heading) => {
-            info!("Heading: w: {}, x: {}, y: {}, z: {}", heading[0], heading[1], heading[2], heading[3]);
-            Some(heading)
+            info!("Heading: {}", heading);
+            let mut head: String<24> = String::new();
+            core::write!(head, "{}", heading).unwrap();
+            Some(head)
         },
         Err(e) => {
             error!("{:?}",defmt::Debug2Format(&e));
@@ -200,7 +203,7 @@ info!("entering loop");
             temp_reading.clone(),
             humidity_reading.clone(),
             Some(heapless::String::<24>::from_str("Updated!").expect("could not make heapless string")),
-            None,
+            heading,
             None
     ]};
     let _ = display.show_message(display_info).await;

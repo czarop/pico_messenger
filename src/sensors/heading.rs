@@ -1,15 +1,4 @@
-use crate::sensors::{accelerometer::AccelerometerReading, magnetometer::{MagnetometerReading, RawReading}};
 use micromath::F32Ext;
-
-// determin after device construction or set up in a calibration procedure
-// and log to file state
-const MAG_OFFSET_X: f32 = 165.0;
-const MAG_OFFSET_Y: f32 = 7.0;
-const MAG_OFFSET_Z: f32 = -122.0;
-
-const MAG_SCALE_X: f32 = 104.0;
-const MAG_SCALE_Y: f32 = 111.0;
-const MAG_SCALE_Z: f32 = 112.0;
 
 #[derive(Debug, defmt::Format, PartialEq, Eq)]
 pub enum Heading {
@@ -24,79 +13,82 @@ pub enum Heading {
 }
 
 impl Heading {
-    pub fn new_from_raw(accel: &AccelerometerReading, raw: &RawReading) -> Self {
-        // when sensor is positioned 90 degrees on long edge (upright)
-        // let mx = (raw.x_unscaled() as f32 - MAG_OFFSET_X) / MAG_SCALE_X;
-        // let my = (raw.y_unscaled() as f32 - MAG_OFFSET_Y) / MAG_SCALE_Y;
-        // let mz = (raw.z_unscaled() as f32 - MAG_OFFSET_Z) / MAG_SCALE_Z;
-        
-        // let heading_rad = (my).atan2(mz);
-        
+    pub fn from_quaternion(quat: [f32; 4]) -> Self {
+        let qx = quat[0];
+        let qy = quat[1];
+        let qz = quat[2];
+        let qw = quat[3];
 
-        // when sensor is flat
-        let mx = (raw.x_unscaled() as f32 - MAG_OFFSET_X) / MAG_SCALE_X;
-        let my = -((raw.y_unscaled() as f32 - MAG_OFFSET_Y) / MAG_SCALE_Y);
-        let mz = ((raw.z_unscaled() as f32 - MAG_OFFSET_Z) / MAG_SCALE_Z);
-
-        let pitch = accel.pitch();
-        let roll = accel.roll();
-
-        let x_comp = mx * pitch.cos() + mz * pitch.sin();
-        let y_comp = mx * roll.sin() * pitch.sin() + my * roll.cos() - mz * roll.sin() * pitch.cos();
-
-        let heading_rad = y_comp.atan2(x_comp);
-
+        let heading_rad = f32::atan2(
+            2.0 * (qw * qz + qx * qy),
+            1.0 - 2.0 * (qy * qy + qz * qz),
+        );
 
         let mut heading_deg = heading_rad.to_degrees();
         if heading_deg < 0.0 {
             heading_deg += 360.0;
         }
 
-        defmt::info!("pitch: {}, roll: {}", pitch, roll);
-defmt::info!("mx: {}, my: {}, mz: {}", mx, my, mz);
-defmt::info!("x_comp: {}, y_comp: {}", x_comp, y_comp);
+        let deg = heading_deg as u16;
 
-        match heading_deg as u16 {
-            338..=360 | 0..=22 => Heading::North(heading_deg as u16),
-            23..=67 => Heading::NorthEast(heading_deg as u16),
-            68..=112 => Heading::East(heading_deg as u16),
-            113..=157 => Heading::SouthEast(heading_deg as u16),
-            158..=202 => Heading::South(heading_deg as u16),
-            203..=247 => Heading::SouthWest(heading_deg as u16),
-            248..=292 => Heading::West(heading_deg as u16),
-            293..=337 => Heading::NorthWest(heading_deg as u16),
-            _ => Heading::North(heading_deg as u16),
+        match deg {
+            338..=360 | 0..=22  => Heading::North(deg),
+            23..=67              => Heading::NorthEast(deg),
+            68..=112             => Heading::East(deg),
+            113..=157            => Heading::SouthEast(deg),
+            158..=202            => Heading::South(deg),
+            203..=247            => Heading::SouthWest(deg),
+            248..=292            => Heading::West(deg),
+            293..=337            => Heading::NorthWest(deg),
+            _                    => Heading::North(deg),
         }
     }
+}
 
-    pub fn new(accel: &AccelerometerReading, mag: &MagnetometerReading) -> Self {
-        defmt::info!("x: {}, y: {}, z: {}", -mag.x, mag.y, -mag.z);
-        let mx = -((mag.x as f32 - MAG_OFFSET_X) / MAG_SCALE_X);
-        let my = (mag.y as f32 - MAG_OFFSET_Y) / MAG_SCALE_Y;
-        let mz = -((mag.z as f32 - MAG_OFFSET_Z) / MAG_SCALE_Z);
-        defmt::info!("mx: {}, my: {} mz: {}", mx, my, mz);
-        let pitch = accel.pitch();
-        let roll = accel.roll();
-        let x_comp = mx * pitch.cos() + mz * pitch.sin();
-        let y_comp =
-            mx * roll.sin() * pitch.sin() + my * roll.cos() - mz * roll.sin() * pitch.cos();
-        // let heading_rad = f32::atan2(y_comp, x_comp);
-        let heading_rad = (my).atan2(mz);
-        let mut heading_deg = heading_rad.to_degrees();
-        if heading_deg < 0.0 {
-            heading_deg += 360.0;
+impl core::fmt::Display for Heading {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Heading::North(d)     => write!(f, "North({}°)", d),
+            Heading::NorthEast(d) => write!(f, "NorthEast({}°)", d),
+            Heading::East(d)      => write!(f, "East({}°)", d),
+            Heading::SouthEast(d) => write!(f, "SouthEast({}°)", d),
+            Heading::South(d)     => write!(f, "South({}°)", d),
+            Heading::SouthWest(d) => write!(f, "SouthWest({}°)", d),
+            Heading::West(d)      => write!(f, "West({}°)", d),
+            Heading::NorthWest(d) => write!(f, "NorthWest({}°)", d),
         }
+    }
+}
 
-        match heading_deg as u16 {
-            338..=360 | 0..=22 => Heading::North(heading_deg as u16),
-            23..=67 => Heading::NorthEast(heading_deg as u16),
-            68..=112 => Heading::East(heading_deg as u16),
-            113..=157 => Heading::SouthEast(heading_deg as u16),
-            158..=202 => Heading::South(heading_deg as u16),
-            203..=247 => Heading::SouthWest(heading_deg as u16),
-            248..=292 => Heading::West(heading_deg as u16),
-            293..=337 => Heading::NorthWest(heading_deg as u16),
-            _ => Heading::North(heading_deg as u16),
+#[derive(Debug, PartialEq)]
+pub struct HeadingReading {
+    pub heading: Heading,
+    pub accuracy_deg: f32,
+}
+
+impl HeadingReading {
+    pub fn is_reliable(&self) -> bool {
+        self.accuracy_deg < 6.0
+    }
+}
+
+impl core::fmt::Display for HeadingReading {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if !self.is_reliable() {
+            write!(f, "{} +/-{:.0}°", self.heading, self.accuracy_deg)
+        } else {
+            write!(f, "{}", self.heading)
+        }
+    }
+}
+
+impl defmt::Format for HeadingReading {
+    fn format(&self, f: defmt::Formatter) {
+        if !self.is_reliable() {
+            let accuracy = self.accuracy_deg as u16;
+            defmt::write!(f, "{} +/-{}°", self.heading, accuracy)
+        } else {
+            defmt::write!(f, "{}", self.heading)
         }
     }
 }
