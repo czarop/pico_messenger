@@ -1,7 +1,7 @@
 
 use crate::display::screen::{self, StatusScreen};
-use crate::sensors::heading::Heading;
-use crate::sensors::{accelerometer, battery_meter, magnetometer, temp_sensor};
+
+use crate::sensors::{battery_meter, bno085, temp_sensor};
 use crate::state::{EmbassyStorage, load_state};
 use heapless::String;
 use core::fmt::Write;
@@ -72,6 +72,7 @@ pub async fn startup(spawner: Spawner) {
         embassy_rp::i2c::Config::default(),
     );
     let i2c0_bus = I2C0_BUS.init(Mutex::new(i2c0));
+    
     let i2c1 = I2c::new_async(
         p.I2C1,
         p.PIN_7,
@@ -82,11 +83,12 @@ pub async fn startup(spawner: Spawner) {
     let i2c1_bus = I2C1_BUS.init(Mutex::new(i2c1));
 
     
-    let i2c_for_accelerometer: i2c::I2cDevice<
+    let i2c_for_bno085: i2c::I2cDevice<
         '_,
         CriticalSectionRawMutex,
         I2c<'static, I2C1, embassy_rp::i2c::Async>,
     > = i2c::I2cDevice::new(i2c1_bus);
+
     let i2c_for_display: i2c::I2cDevice<
         '_,
         CriticalSectionRawMutex,
@@ -102,16 +104,14 @@ pub async fn startup(spawner: Spawner) {
         CriticalSectionRawMutex,
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
     > = i2c::I2cDevice::new(i2c0_bus);
-    let i2c_for_magnetometer: i2c::I2cDevice<
-        '_,
-        CriticalSectionRawMutex,
-        I2c<'static, I2C0, embassy_rp::i2c::Async>,
-    > = i2c::I2cDevice::new(i2c0_bus);
 
-    let mut accelerometer = accelerometer::Accelerometer::new(p.PIN_23, i2c_for_accelerometer).await;
+
+
     let mut display = screen::Display::new(i2c_for_display).await;
     let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_senor);
-    let mut magnetometer = magnetometer::Magnetometer::new(i2c_for_magnetometer);
+    let mut bno085 = bno085::Imu::new(i2c_for_bno085).await;
+
+    bno085.enable_rotation_vector(100).await.expect("Failed to enable rotation vector");
 
 
 
@@ -139,9 +139,7 @@ pub async fn startup(spawner: Spawner) {
 }
 
     loop{
-    accelerometer.clear_wake_source().await;
-    // let accel = accelerometer.acceleration_reading().await.expect("failed to read accel");
-    // info!("accel x: {}, y: {}, z: {}", accel.x, accel.y, accel.z);
+    
 
 
 
@@ -181,14 +179,18 @@ pub async fn startup(spawner: Spawner) {
         },
     };
     let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
-    accelerometer.switch_to_on_demand_mode().await.expect("accel failed to switch to on demand mode");
-    let accel = accelerometer.acceleration_reading().await.expect("failed to take accel reading");
-
-    let raw_mag = magnetometer.read_raw().await.expect("failed to take mag reading");
-    let heading = Heading::new_from_raw(&accel, &raw_mag);
-
-    let mut heading_s: String<24> = String::new();
-    core::write!(heading_s, "Heading: {:?}", heading).unwrap();
+   
+    let heading = match bno085.heading().await {
+        Ok(heading) => {
+            info!("Heading: w: {}, x: {}, y: {}, z: {}", heading[0], heading[1], heading[2], heading[3]);
+            Some(heading)
+        },
+        Err(e) => {
+            error!("{:?}",defmt::Debug2Format(&e));
+            None
+        }
+    };
+    
     
     let display_info = StatusScreen{ 
         battery: battery_level, 
@@ -196,7 +198,7 @@ pub async fn startup(spawner: Spawner) {
             temp_reading.clone(),
             humidity_reading.clone(),
             Some(heapless::String::<24>::from_str("Updated!").expect("could not make heapless string")),
-            Some(heading_s),
+            None,
             None
     ]};
     let _ = display.show_message(display_info).await;
@@ -219,7 +221,7 @@ pub async fn startup(spawner: Spawner) {
     //     ),
     //     Err(e) => error!("Error"),
     // }
-    embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
+    embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
     
 
 
