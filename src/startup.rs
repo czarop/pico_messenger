@@ -1,9 +1,11 @@
 
 use crate::display::screen::{self, StatusScreen};
 
+use crate::sensors::bno085::{ImuCommand, ImuReport};
 use crate::sensors::{battery_meter, bno085, temp_sensor};
 use crate::state::{EmbassyStorage, load_state};
 use embassy_rp::gpio::Input;
+use embassy_sync::channel::Channel;
 use heapless::String;
 use core::fmt::Write;
 use core::str::FromStr;
@@ -40,6 +42,9 @@ static I2C0_BUS: StaticCell<
 static I2C1_BUS: StaticCell<
     Mutex<CriticalSectionRawMutex, I2c<'static, I2C1, embassy_rp::i2c::Async>>,
 > = StaticCell::new();
+
+static IMU_COMMANDS: Channel<CriticalSectionRawMutex, ImuCommand, 4> = Channel::new();
+static IMU_REPORTS: Channel<CriticalSectionRawMutex, ImuReport, 4> = Channel::new();
 
 pub async fn startup(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
@@ -131,13 +136,27 @@ pub async fn startup(spawner: Spawner) {
     // magnetometer.calibrate().await;
 
 
-    for addr in 0x08u8..=0x77u8 {
-    let mut buf = [0u8; 1];
-    match i2c1_bus.lock().await.write_read(addr, &[0x0F], &mut buf).await {
-        Ok(_) => info!("device at {:#04x}: {:#04x}", addr, buf[0]),
-        Err(_) => {}
-    }
-}
+//     for addr in 0x08u8..=0x77u8 {
+//     let mut buf = [0u8; 1];
+//     match i2c1_bus.lock().await.write_read(addr, &[0x0F], &mut buf).await {
+//         Ok(_) => info!("device at {:#04x}: {:#04x}", addr, buf[0]),
+//         Err(_) => {}
+//     }
+// }
+
+    spawner.spawn(bno085::imu_task(
+        bno085,
+        IMU_COMMANDS.receiver(),
+        IMU_REPORTS.sender(),
+    ).expect("failed to spawn imu task"));
+
+        spawner.spawn(bno085::ui_task(
+        IMU_REPORTS.receiver(),
+    ).expect("failed to spawn imu task"));
+
+// Keep sender/receiver handles for main task
+let imu_cmd = IMU_COMMANDS.sender();
+let imu_report = IMU_REPORTS.receiver();
 
 info!("entering loop");
 
@@ -183,18 +202,19 @@ info!("entering loop");
     };
     let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
    
-    let heading = match bno085.heading().await {
-        Ok(heading) => {
-            info!("Heading: {}", heading);
-            let mut head: String<24> = String::new();
-            core::write!(head, "{}", heading).unwrap();
-            Some(head)
-        },
-        Err(e) => {
-            error!("{:?}",defmt::Debug2Format(&e));
-            None
-        }
-    };
+    // let heading = match bno085.heading().await {
+    //     Ok(heading) => {
+    //         info!("Heading: {}", heading);
+    //         let mut head: String<24> = String::new();
+    //         core::write!(head, "{}", heading).unwrap();
+    //         Some(head)
+    //     },
+    //     Err(e) => {
+    //         error!("{:?}",defmt::Debug2Format(&e));
+    //         None
+    //     }
+    // };
+
     
     
     let display_info = StatusScreen{ 
@@ -203,7 +223,7 @@ info!("entering loop");
             temp_reading.clone(),
             humidity_reading.clone(),
             Some(heapless::String::<24>::from_str("Updated!").expect("could not make heapless string")),
-            heading,
+            None,
             None
     ]};
     let _ = display.show_message(display_info).await;

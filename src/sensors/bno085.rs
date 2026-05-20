@@ -1,6 +1,7 @@
 use bno080::Error;
 use bno080::interface::i2c_async::I2cInterfaceAsync;
 use bno080::wrapper_async::{BNO085Async, WrapperError};
+use defmt::info;
 use embassy_rp::Peri;
 use embassy_rp::gpio::Input;
 use embassy_rp::peripherals::PIN_3;
@@ -10,6 +11,7 @@ use embassy_sync::channel::{Receiver, Sender};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_rp::i2c::{I2c, Async};
 use embassy_rp::peripherals::I2C1;
+use embassy_time::Delay;
 
 use crate::sensors::heading::{Heading, HeadingReading};
 
@@ -109,6 +111,16 @@ where
         // eat the significant motion report
         self.inner.eat_all_messages(&mut embassy_time::Delay).await;
     }
+
+    pub async fn enable_activity_recognition(&mut self) -> Result<(), ImuError<CommE>> {
+        self.inner.enable_activity_classifier(60000).await.map_err(ImuError::from)
+    }
+
+    pub fn get_activity_type(self) -> bno080::activity::Activity {
+        self.inner.activity()
+    }
+
+
 }
 
 
@@ -150,31 +162,66 @@ pub enum ImuReport {
     Heading(HeadingReading),
     StepCount(u16),
     MotionDetected,
+    Activity(bno080::activity::Activity),
     Error,
 }
 
 #[embassy_executor::task]
-async fn imu_task(
+pub async fn imu_task(
     mut imu: Imu<ImuI2C>,
     receiver: Receiver<'static, CriticalSectionRawMutex, ImuCommand, 4>,
     sender: Sender<'static, CriticalSectionRawMutex, ImuReport, 4>,
 ) {
     loop {
-        match receiver.receive().await {
-            ImuCommand::GetHeading => {
-                match imu.heading().await {
-                    Ok(h) => sender.send(ImuReport::Heading(h)).await,
-                    Err(_) => sender.send(ImuReport::Error).await,
+        // check for commands without blocking
+        if let Ok(cmd) = receiver.try_receive() {
+            match cmd {
+                ImuCommand::WaitForMotion => {
+                    imu.wait_for_motion().await;
+                    sender.send(ImuReport::MotionDetected).await;
                 }
+                ImuCommand::GetHeading => {
+                    match imu.heading().await {
+                        Ok(h) => sender.send(ImuReport::Heading(h)).await,
+                        Err(_) => sender.send(ImuReport::Error).await,
+                    }
+                }
+                _ => {}
             }
-            ImuCommand::WaitForMotion => {
-                imu.wait_for_motion().await;
-                sender.send(ImuReport::MotionDetected).await;
-            }
-            // etc
-            ImuCommand::EnableRotationVector => todo!(),
-            ImuCommand::EnableStepCounter => todo!(),
-            ImuCommand::GetStepCount => todo!(),
+        }
+
+        // proactively push updates on every H_INTN pulse
+        imu.int_pin.wait_for_low().await;
+        imu.inner.handle_all_messages(&mut Delay, 150).await;
+
+        // push whatever has changed
+        if let Ok(h) = imu.inner.rotation_quaternion() {
+            let _ = sender.try_send(ImuReport::Heading(
+                HeadingReading {
+                    heading: Heading::from_quaternion(h),
+                    accuracy_deg: imu.inner.heading_accuracy(),
+                }
+            ));
+        }
+        
+        let activity = imu.inner.activity();
+        let _ = sender.try_send(ImuReport::Activity(activity));
+        let _ = sender.try_send(ImuReport::StepCount(imu.inner.step_count()));
+    }
+}
+
+#[embassy_executor::task]
+pub async fn ui_task(
+    reports: Receiver<'static, CriticalSectionRawMutex, ImuReport, 4>,
+) {
+    loop {
+        // blocks until a report arrives
+        let report = reports.receive().await;
+        match report {
+            ImuReport::Heading(h) => { info!("Heading: {}", h.heading) }
+            ImuReport::Activity(a) => { info!("Activity: {:?}", a) }
+            ImuReport::MotionDetected => { info!("Motion detected") }
+            _ => {}
         }
     }
 }
