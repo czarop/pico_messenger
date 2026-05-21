@@ -117,7 +117,7 @@ pub async fn startup(spawner: Spawner) {
     let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
     let mut bno085 = bno085::Imu::new(i2c_for_bno085,  p.PIN_3, p.PIN_2).await;
 
-    // bno085.enable_rotation_vector(1000).await.expect("Failed to enable rotation vector");
+    bno085.enable_rotation_vector(1000).await.expect("Failed to enable rotation vector");
     // bno085.enable_activity_recognition().await.expect("failed to initiate activity type");
     bno085.enable_significant_motion_wake().await.expect("failed to enable shake detection");
 
@@ -200,7 +200,7 @@ info!("entering loop");
     let _ = display.show_message(display_info).await;
 
 
-    embassy_time::Timer::after(embassy_time::Duration::from_secs(5)).await;
+    embassy_time::Timer::after(embassy_time::Duration::from_secs(15)).await;
     
 
 

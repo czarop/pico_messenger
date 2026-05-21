@@ -55,45 +55,22 @@ where
     }
 
     pub async fn wait_for_motion_dormant(&mut self) {
-
+        self.inner.enable_significant_motion_wake().await.expect("failed to enable significant motion wake");
         self.inner.sleep().await.expect("failed to sleep BNO085");
-
+        embassy_time::Timer::after_millis(50).await;
+        self.inner.handle_all_messages(&mut Delay, 10).await;
         self.inner.sensor_interface.dormant_sleep_on_hint();
-
         self.inner.wake().await.expect("failed to wake BNO085");
-        self.inner.eat_all_messages(&mut embassy_time::Delay).await;
     }
 
     // for testing - keeps clocks running so connected to probe
     pub async fn wait_for_motion(&mut self) {
-        self.inner.enable_significant_motion_wake().await.expect("...");
-    
-        // let BNO085 process the enable command
-        embassy_time::Timer::after_millis(100).await;
-
-
-        info!("sending sleep");
-        self.inner.sleep().await.expect("...");
+        self.inner.enable_significant_motion_wake().await.expect("failed to enable significant motion wake");
+        self.inner.sleep().await.expect("failed to sleep BNO085");
         embassy_time::Timer::after_millis(50).await;
-        info!("draining messages");
-        // drain pending messages safely
-        let mut count = 1;
-        while self.inner.sensor_interface.hint_low() || count != 0 {
-            info!("handling message");
-            count = self.inner.handle_one_message(&mut embassy_time::Delay, 10).await;
-        }
-        // self.inner.handle_all_messages(&mut embassy_time::Delay, 10).await;
-        self.inner.sensor_interface.wait_for_hint_high().await.ok();
-        info!("awaiting hint");
-        // wait for wake event
+        self.inner.handle_all_messages(&mut Delay, 10).await;
         self.inner.sensor_interface.wait_for_hint().await.ok();
-        info!("waking");
-        self.inner.wake().await.expect("...");
-        // info!("draining");
-
-        // self.inner.handle_all_messages(&mut embassy_time::Delay, 10).await;
-
-        info!("done");
+        self.inner.wake().await.expect("failed to wake BNO085");
 
     }
 }
@@ -205,7 +182,7 @@ pub async fn imu_task(
     sender: Sender<'static, CriticalSectionRawMutex, ImuReport, 4>,
 ) {
     loop {
-        info!("imu task running");
+
         // race HINT against sleep signal
         match embassy_futures::select::select(
             imu.inner.sensor_interface.wait_for_hint(),
@@ -226,12 +203,7 @@ pub async fn imu_task(
             }
             embassy_futures::select::Either::Second(_) => {
                 // enter low power — whole board sleeps until motion
-                info!("waiting for sleep");
-                let mut count = 1;
-                while imu.inner.sensor_interface.hint_low() || count != 0 {
-                    info!("handling message");
-                    count = imu.inner.handle_one_message(&mut embassy_time::Delay, 10).await;
-                }
+                
                 imu.wait_for_motion().await;
                 sender.send(ImuReport::MotionDetected).await;
             }

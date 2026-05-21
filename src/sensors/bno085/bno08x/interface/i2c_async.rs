@@ -206,20 +206,13 @@ where
     ) -> Result<usize, Self::SensorError> {
         // Cannot use write_read with bno080,
         // because it does not support repeated start with i2c.
-        defmt::info!("1");
         let address = self.common.address();
         self.i2c_port
             .write(address, send_buf)
             .await
             .map_err(Error::Comm)?;
-
-        defmt::info!("2");
         self.common.zero_recv_packet_header();
-
-        defmt::info!("3");
-        //stall before attempted read?
         I2cCommon::zero_buffer(recv_buf);
-        defmt::info!("4");
         self.i2c_port
             .read(
                 address,
@@ -227,16 +220,13 @@ where
             )
             .await
             .map_err(Error::Comm)?;
-        defmt::info!("5");
         let packet_len = self.common.packet_len_from_header();
-        defmt::info!("6");
         let received_len = if packet_len > PACKET_HEADER_LENGTH {
             self.read_sized_packet(packet_len, recv_buf).await?
         } else {
             packet_len
         };
 
-        defmt::info!("7");
         self.common.record_received_packet(packet_len);
 
         Ok(received_len)
