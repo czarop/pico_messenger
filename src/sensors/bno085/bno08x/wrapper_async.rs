@@ -688,17 +688,15 @@ where
 
     pub async fn enable_step_detector(
         &mut self,
-        millis_between_reports: u16,
     ) -> Result<(), WrapperError<SE>> {
-        self.enable_report(SENSOR_REPORTID_STEP_DETECTOR, millis_between_reports)
+        self.enable_report(SENSOR_REPORTID_STEP_DETECTOR, 0)
             .await
     }
 
     pub async fn enable_shake_detector(
         &mut self,
-        millis_between_reports: u16,
     ) -> Result<(), WrapperError<SE>> {
-        self.enable_report(SENSOR_REPORTID_SHAKE_DETECTOR, millis_between_reports)
+        self.enable_report(SENSOR_REPORTID_SHAKE_DETECTOR, 0)
             .await
     }
 
@@ -738,17 +736,15 @@ where
 
     pub async fn enable_stability_detector(
         &mut self,
-        millis_between_reports: u16,
     ) -> Result<(), WrapperError<SE>> {
-        self.enable_report(SENSOR_REPORTID_STABILITY_DETECTOR, millis_between_reports)
+        self.enable_report(SENSOR_REPORTID_STABILITY_DETECTOR, 0)
             .await
     }
 
     pub async fn enable_pickup_detector(
         &mut self,
-        millis_between_reports: u16,
     ) -> Result<(), WrapperError<SE>> {
-        self.enable_report(SENSOR_REPORTID_PICKUP_DETECTOR, millis_between_reports)
+        self.enable_report(SENSOR_REPORTID_PICKUP_DETECTOR, 0)
             .await
     }
 
@@ -777,11 +773,11 @@ where
     }
 
     pub async fn enable_significant_motion_wake(&mut self) -> Result<(), WrapperError<SE>> {
-        let micros: u32 = 0;
+        let micros: u32 = 1000;
         let cmd_body: [u8; 17] = [
             SHUB_REPORT_SET_FEATURE_CMD,
             SENSOR_REPORTID_SIGNIFICANT_MOTION,
-            0x04, // wake bit set
+            0x0C, // wake bit set
             0,
             0,
             (micros & 0xFFu32) as u8,
@@ -800,6 +796,44 @@ where
         self.send_packet(CHANNEL_HUB_CONTROL, &cmd_body).await?;
         Ok(())
     }
+
+pub async fn enable_stability_detector_wake(&mut self) -> Result<(), WrapperError<SE>> {
+    let micros: u32 = 100000;
+    let cmd_body: [u8; 17] = [
+        SHUB_REPORT_SET_FEATURE_CMD,
+        SENSOR_REPORTID_STABILITY_DETECTOR,
+        0x0C, // wake bit set
+        0, 0,
+        (micros & 0xFFu32) as u8,
+        (micros.shr(8) & 0xFFu32) as u8,
+        (micros.shr(16) & 0xFFu32) as u8,
+        (micros.shr(24) & 0xFFu32) as u8,
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+    ];
+    self.send_packet(CHANNEL_HUB_CONTROL, &cmd_body).await?;
+    Ok(())
+}
+pub async fn enable_shake_detector_wake(&mut self) -> Result<(), WrapperError<SE>> {
+    let micros: u32 = 1000000;
+    let cmd_body: [u8; 17] = [
+        SHUB_REPORT_SET_FEATURE_CMD,
+        SENSOR_REPORTID_SHAKE_DETECTOR, // 0x19
+        0x0C, // wake bit set
+        0, 0,
+        (micros & 0xFFu32) as u8,
+        (micros.shr(8) & 0xFFu32) as u8,
+        (micros.shr(16) & 0xFFu32) as u8,
+        (micros.shr(24) & 0xFFu32) as u8,
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+    ];
+    self.send_packet(CHANNEL_HUB_CONTROL, &cmd_body).await?;
+    Ok(())
+}
+
+
+
 }
 
 const Q8_SCALE: f32 = 1.0 / ((1 << 8) as f32);

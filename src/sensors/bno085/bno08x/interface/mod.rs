@@ -6,8 +6,8 @@ pub mod i2c_async;
 
 use embedded_hal_async::delay::DelayNs as DelayNsAsync;
 
-#[cfg(test)]
-pub mod mock_i2c_port;
+// #[cfg(test)]
+// pub mod mock_i2c_port;
 
 use core::ops::Shl;
 

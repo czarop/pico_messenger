@@ -1,10 +1,9 @@
 
 use crate::display::screen::{self, StatusScreen};
 
-use crate::sensors::bno085::bno085::{self, ImuCommand, ImuReport};
+use crate::sensors::bno085::bno085::{self, ENTER_SLEEP, ImuCommand, ImuReport};
 use crate::sensors::{battery_meter, temp_sensor};
 use crate::state::{EmbassyStorage, load_state};
-use embassy_rp::gpio::Input;
 use embassy_sync::channel::Channel;
 use heapless::String;
 use core::fmt::Write;
@@ -43,7 +42,7 @@ static I2C1_BUS: StaticCell<
     Mutex<CriticalSectionRawMutex, I2c<'static, I2C1, embassy_rp::i2c::Async>>,
 > = StaticCell::new();
 
-static IMU_COMMANDS: Channel<CriticalSectionRawMutex, ImuCommand, 4> = Channel::new();
+// static IMU_COMMANDS: Channel<CriticalSectionRawMutex, ImuCommand, 4> = Channel::new();
 static IMU_REPORTS: Channel<CriticalSectionRawMutex, ImuReport, 4> = Channel::new();
 
 pub async fn startup(spawner: Spawner) {
@@ -118,12 +117,14 @@ pub async fn startup(spawner: Spawner) {
     let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
     let mut bno085 = bno085::Imu::new(i2c_for_bno085,  p.PIN_3, p.PIN_2).await;
 
-    bno085.enable_rotation_vector(100).await.expect("Failed to enable rotation vector");
-    bno085.enable_activity_recognition().await.expect("failed to initiate activity type");
+    // bno085.enable_rotation_vector(1000).await.expect("Failed to enable rotation vector");
+    // bno085.enable_activity_recognition().await.expect("failed to initiate activity type");
+    bno085.enable_significant_motion_wake().await.expect("failed to enable shake detection");
+
 
     spawner.spawn(bno085::imu_task(
         bno085,
-        IMU_COMMANDS.receiver(),
+        // IMU_COMMANDS.receiver(),
         IMU_REPORTS.sender(),
     ).expect("failed to spawn imu task"));
 
@@ -132,19 +133,22 @@ pub async fn startup(spawner: Spawner) {
     ).expect("failed to spawn imu task"));
 
 // Keep sender/receiver handles for main task
-let imu_cmd = IMU_COMMANDS.sender();
-let imu_report = IMU_REPORTS.receiver();
+// let imu_cmd = IMU_COMMANDS.sender();
+// let imu_report = IMU_REPORTS.receiver();
 
 
 
 info!("entering loop");
 
     loop{
-        info!("1");
-        imu_cmd.send(ImuCommand::GetHeading).await;
-        info!("2");
-        imu_cmd.send(ImuCommand::GetStepCount).await;
-        info!("3");
+        info!("loop top");
+        // imu_cmd.send(ImuCommand::GetHeading).await;
+        // info!("2");
+        // imu_cmd.send(ImuCommand::GetStepCount).await;
+        // info!("3");
+        // imu_cmd.send(ImuCommand::WaitForMotion).await;
+        ENTER_SLEEP.signal(());
+        info!("loop after sleep");
 
     let soc = match max17048.soc().await {
         Ok(soc) => soc,
@@ -196,7 +200,7 @@ info!("entering loop");
     let _ = display.show_message(display_info).await;
 
 
-    embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+    embassy_time::Timer::after(embassy_time::Duration::from_secs(5)).await;
     
 
 

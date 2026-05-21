@@ -81,7 +81,7 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 postcard = "1.0"
 littlefs2 = {version="0.7.1", features=["c-stubs"]}
 delog = { version = "0.1.8", features = ["portable-atomic"] }
-# embassy-futures = { version = "0.1.2" }
+embassy-futures = { version = "0.1.2" }
 atat = {version = "0.24", features = ["defmt", "heapless"]}
 
 lis2dw12-i2c = "0.1"

@@ -11,6 +11,7 @@ use embassy_sync::channel::{Receiver, Sender};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_rp::i2c::{Async, I2c};
 use embassy_rp::peripherals::I2C1;
+use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 
 use crate::sensors::heading::{Heading, HeadingReading};
@@ -54,10 +55,7 @@ where
     }
 
     pub async fn wait_for_motion_dormant(&mut self) {
-        self.inner
-            .enable_significant_motion_wake()
-            .await
-            .expect("failed to enable significant motion");
+
         self.inner.sleep().await.expect("failed to sleep BNO085");
 
         self.inner.sensor_interface.dormant_sleep_on_hint();
@@ -68,16 +66,35 @@ where
 
     // for testing - keeps clocks running so connected to probe
     pub async fn wait_for_motion(&mut self) {
-        self.inner
-            .enable_significant_motion_wake()
-            .await
-            .expect("failed to enable significant motion");
-        self.inner.sleep().await.expect("failed to sleep BNO085");
+        self.inner.enable_significant_motion_wake().await.expect("...");
+    
+        // let BNO085 process the enable command
+        embassy_time::Timer::after_millis(100).await;
 
+
+        info!("sending sleep");
+        self.inner.sleep().await.expect("...");
+        embassy_time::Timer::after_millis(50).await;
+        info!("draining messages");
+        // drain pending messages safely
+        let mut count = 1;
+        while self.inner.sensor_interface.hint_low() || count != 0 {
+            info!("handling message");
+            count = self.inner.handle_one_message(&mut embassy_time::Delay, 10).await;
+        }
+        // self.inner.handle_all_messages(&mut embassy_time::Delay, 10).await;
+        self.inner.sensor_interface.wait_for_hint_high().await.ok();
+        info!("awaiting hint");
+        // wait for wake event
         self.inner.sensor_interface.wait_for_hint().await.ok();
+        info!("waking");
+        self.inner.wake().await.expect("...");
+        // info!("draining");
 
-        self.inner.wake().await.expect("failed to wake BNO085");
-        self.inner.eat_all_messages(&mut embassy_time::Delay).await;
+        // self.inner.handle_all_messages(&mut embassy_time::Delay, 10).await;
+
+        info!("done");
+
     }
 }
 
@@ -87,36 +104,6 @@ where
     CommE: core::fmt::Debug,
     HINT: embedded_hal::digital::InputPin + embedded_hal_async::digital::Wait,
 {
-    // pub async fn new(i2c: I2C, int_pin: Peri<'static, PIN_3>, rst_pin: Peri<'static, PIN_2>) -> Self {
-    //     let mut int_pin = Input::new(int_pin, embassy_rp::gpio::Pull::Up);
-    //     let mut rst_pin = Output::new(rst_pin, embassy_rp::gpio::Level::High);
-    //     let iface: I2cInterfaceAsync<I2C, HINT> = I2cInterfaceAsync::default(i2c, int_pin);
-
-    //     let mut inner: BNO085Async<I2cInterfaceAsync<I2C, HINT>> = BNO085Async::new_with_interface(iface);
-
-    //     // Hardware reset
-    //     rst_pin.set_low();
-
-    //     embassy_time::Timer::after_millis(10).await;
-    //     rst_pin.set_high();
-
-    //     loop {
-    //         int_pin.wait_for_low().await;
-    //         info!("4");
-    //         embassy_time::Timer::after_millis(50).await;
-    //         if int_pin.is_low() {
-    //             break;
-    //         }
-    //         info!("went high trying again");
-    //     }
-
-    //     inner
-    //         .init(&mut embassy_time::Delay)
-    //         .await
-    //         .expect("BNO085 init failed");
-    //     info!("BNO085 init completed");
-    //     Self { inner }
-    // }
 
     pub async fn enable_rotation_vector(&mut self, millis: u16) -> Result<(), ImuError<CommE>> {
         self.inner
@@ -126,11 +113,7 @@ where
     }
 
     pub fn heading(&mut self) -> Result<HeadingReading, ImuError<CommE>> {
-        // self.int_pin.wait_for_low().await;
-        // self
-        //     .inner
-        //     .handle_all_messages(&mut embassy_time::Delay, 150)
-        //     .await;
+        
         let quat = self.inner.rotation_quaternion().map_err(ImuError::from)?;
 
         Ok(HeadingReading {
@@ -148,6 +131,27 @@ where
 
     pub fn get_activity_type(self) -> super::bno08x::activity::Activity {
         self.inner.activity()
+    }
+
+    pub async fn enable_significant_motion_wake(&mut self) -> Result<(), ImuError<CommE>> {
+        self.inner
+            .enable_significant_motion_wake()
+            .await
+            .map_err(ImuError::from)
+    }
+
+    pub async fn enable_stability_detection_wake(&mut self) -> Result<(), ImuError<CommE>> {
+        self.inner
+            .enable_stability_detector_wake()
+            .await
+            .map_err(ImuError::from)
+    }
+
+    pub async fn enable_shake_detection_wake(&mut self) -> Result<(), ImuError<CommE>> {
+        self.inner
+            .enable_shake_detector_wake()
+            .await
+            .map_err(ImuError::from)
     }
 }
 
@@ -193,52 +197,51 @@ pub enum ImuReport {
     Error,
 }
 
+pub static ENTER_SLEEP: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
 #[embassy_executor::task]
 pub async fn imu_task(
     mut imu: ImuDevice,
-    receiver: Receiver<'static, CriticalSectionRawMutex, ImuCommand, 4>,
     sender: Sender<'static, CriticalSectionRawMutex, ImuReport, 4>,
 ) {
     loop {
-        info!("imu task loop start");
-        // check for commands without blocking
-        if let Ok(cmd) = receiver.try_receive() {
-            match cmd {
-                ImuCommand::WaitForMotion => {
-                    imu.wait_for_motion().await;
-                    sender.send(ImuReport::MotionDetected).await;
+        info!("imu task running");
+        // race HINT against sleep signal
+        match embassy_futures::select::select(
+            imu.inner.sensor_interface.wait_for_hint(),
+            ENTER_SLEEP.wait(),
+        ).await {
+            embassy_futures::select::Either::First(_) => {
+                // normal data flow
+                imu.inner.handle_one_message(&mut Delay, 10).await;
+
+                if let Ok(h) = imu.inner.rotation_quaternion() {
+                    let _ = sender.try_send(ImuReport::Heading(HeadingReading {
+                        heading: Heading::from_quaternion(h),
+                        accuracy_deg: imu.inner.heading_accuracy(),
+                    }));
                 }
-                ImuCommand::GetHeading => match imu.heading() {
-                    Ok(h) => sender.send(ImuReport::Heading(h)).await,
-                    Err(_) => sender.send(ImuReport::Error).await,
-                },
-                _ => {}
+                let _ = sender.try_send(ImuReport::Activity(imu.inner.activity()));
+                let _ = sender.try_send(ImuReport::StepCount(imu.inner.step_count()));
+            }
+            embassy_futures::select::Either::Second(_) => {
+                // enter low power — whole board sleeps until motion
+                info!("waiting for sleep");
+                let mut count = 1;
+                while imu.inner.sensor_interface.hint_low() || count != 0 {
+                    info!("handling message");
+                    count = imu.inner.handle_one_message(&mut embassy_time::Delay, 10).await;
+                }
+                imu.wait_for_motion().await;
+                sender.send(ImuReport::MotionDetected).await;
             }
         }
-
-        // proactively push updates on every H_INTN pulse
-        info!("imu task wait for low start");
-        imu.inner.sensor_interface.wait_for_hint().await.ok();
-        info!("imu task wait for low end");
-        imu.inner.handle_one_message(&mut Delay, 10).await;
-        info!("imu task messages handled");
-
-        // push whatever has changed
-        if let Ok(h) = imu.inner.rotation_quaternion() {
-            let _ = sender.try_send(ImuReport::Heading(HeadingReading {
-                heading: Heading::from_quaternion(h),
-                accuracy_deg: imu.inner.heading_accuracy(),
-            }));
-        }
-        info!("imu task sending messages");
-        let activity = imu.inner.activity();
-        let _ = sender.try_send(ImuReport::Activity(activity));
-        let _ = sender.try_send(ImuReport::StepCount(imu.inner.step_count()));
     }
 }
 
 #[embassy_executor::task]
 pub async fn ui_task(reports: Receiver<'static, CriticalSectionRawMutex, ImuReport, 4>) {
+
     loop {
         // blocks until a report arrives
         let report = reports.receive().await;

@@ -4,7 +4,7 @@ LICENSE: BSD3 (see LICENSE file)
 */
 
 pub mod interface;
-pub mod wrapper;
+// pub mod wrapper;
 
 pub mod activity;
 pub mod wrapper_async;
