@@ -1,7 +1,7 @@
 
 use crate::display::screen::{self, StatusScreen};
 
-use crate::sensors::bno085::bno085::{self, ENTER_SLEEP, ImuCommand, ImuReport};
+use crate::sensors::bno085::bno085::{self, ENTER_SLEEP, ImuReport};
 use crate::sensors::{battery_meter, temp_sensor};
 use crate::state::{EmbassyStorage, load_state};
 use embassy_sync::channel::Channel;
@@ -132,46 +132,34 @@ pub async fn startup(spawner: Spawner) {
         IMU_REPORTS.receiver(),
     ).expect("failed to spawn imu task"));
 
-// Keep sender/receiver handles for main task
-// let imu_cmd = IMU_COMMANDS.sender();
-// let imu_report = IMU_REPORTS.receiver();
-
-
 
 info!("entering loop");
 
     loop{
-        info!("loop top");
-        // imu_cmd.send(ImuCommand::GetHeading).await;
-        // info!("2");
-        // imu_cmd.send(ImuCommand::GetStepCount).await;
-        // info!("3");
-        // imu_cmd.send(ImuCommand::WaitForMotion).await;
+
         ENTER_SLEEP.signal(());
-        info!("loop after sleep");
 
     let soc = match max17048.soc().await {
         Ok(soc) => soc,
         Err(e) => {
-            // error!("Failed to read state of charge: {:?}", e);
+            error!("Failed to read state of charge: {:?}", e);
             0
         }
     };
-    // info!("State of charge: {}%", soc);
+
     let is_charging = match max17048.charge_rate().await {
         Ok(rate) => {
             info!("Charge rate: {}%/hr", rate);
             rate > 0.0
         },
         Err(e) => {
-            // error!("Failed to read charge rate: {:?}", e);
+            error!("Failed to read charge rate: {:?}", e);
             false
         }
     };
 
     let (temp_reading, humidity_reading) = match temp_senor.read_temperature(temp_sensor::TempSensorPowerMode::LPM3).await {
         Ok(r) => {
-            // info!("Temperature: {}°C, Humidity: {}%", r.temperature, r.humidity);
             let mut temp: String<24> = String::new();
             core::write!(temp, "Temp: {:.1}C", r.temperature).unwrap();
             let mut humidity: String<24> = String::new();
