@@ -1,8 +1,8 @@
 
 use crate::display::screen::{self, StatusScreen};
 
-use crate::sensors::bno085::{ImuCommand, ImuReport};
-use crate::sensors::{battery_meter, bno085, temp_sensor};
+use crate::sensors::bno085::bno085::{self, ImuCommand, ImuReport};
+use crate::sensors::{battery_meter, temp_sensor};
 use crate::state::{EmbassyStorage, load_state};
 use embassy_rp::gpio::Input;
 use embassy_sync::channel::Channel;
@@ -115,34 +115,11 @@ pub async fn startup(spawner: Spawner) {
 
     let mut display = screen::Display::new(i2c_for_display).await;
     let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_senor);
-    let mut bno085 = bno085::Imu::new(i2c_for_bno085,  p.PIN_3).await;
+    let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
+    let mut bno085 = bno085::Imu::new(i2c_for_bno085,  p.PIN_3, p.PIN_2).await;
 
     bno085.enable_rotation_vector(100).await.expect("Failed to enable rotation vector");
-
-
-
-    use embedded_hal_async::i2c::I2c as _;
-    for addr in 0x08u8..=0x77u8 {
-    let mut buf = [0u8; 1];
-    match i2c0_bus.lock().await.write_read(addr, &[0x0F], &mut buf).await {
-        Ok(_) => info!("device at {:#04x}: {:#04x}", addr, buf[0]),
-        Err(_) => {}
-    }
-}
-    
-    
-    let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
-    
-    // magnetometer.calibrate().await;
-
-
-//     for addr in 0x08u8..=0x77u8 {
-//     let mut buf = [0u8; 1];
-//     match i2c1_bus.lock().await.write_read(addr, &[0x0F], &mut buf).await {
-//         Ok(_) => info!("device at {:#04x}: {:#04x}", addr, buf[0]),
-//         Err(_) => {}
-//     }
-// }
+    bno085.enable_activity_recognition().await.expect("failed to initiate activity type");
 
     spawner.spawn(bno085::imu_task(
         bno085,
@@ -158,12 +135,16 @@ pub async fn startup(spawner: Spawner) {
 let imu_cmd = IMU_COMMANDS.sender();
 let imu_report = IMU_REPORTS.receiver();
 
+
+
 info!("entering loop");
 
     loop{
-    
-
-
+        info!("1");
+        imu_cmd.send(ImuCommand::GetHeading).await;
+        info!("2");
+        imu_cmd.send(ImuCommand::GetStepCount).await;
+        info!("3");
 
     let soc = match max17048.soc().await {
         Ok(soc) => soc,
@@ -183,7 +164,6 @@ info!("entering loop");
             false
         }
     };
-    // info!("Is charging: {}", is_charging);
 
     let (temp_reading, humidity_reading) = match temp_senor.read_temperature(temp_sensor::TempSensorPowerMode::LPM3).await {
         Ok(r) => {
@@ -202,19 +182,6 @@ info!("entering loop");
     };
     let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
    
-    // let heading = match bno085.heading().await {
-    //     Ok(heading) => {
-    //         info!("Heading: {}", heading);
-    //         let mut head: String<24> = String::new();
-    //         core::write!(head, "{}", heading).unwrap();
-    //         Some(head)
-    //     },
-    //     Err(e) => {
-    //         error!("{:?}",defmt::Debug2Format(&e));
-    //         None
-    //     }
-    // };
-
     
     
     let display_info = StatusScreen{ 
@@ -227,25 +194,8 @@ info!("entering loop");
             None
     ]};
     let _ = display.show_message(display_info).await;
-    
-
-    // match accelerometer.read_orientation().await {
-    //     Ok(orientation) => info!("Orientation: {:?}", orientation),
-    //     Err(e) => error!("Error"),
-    // }
 
 
-
-    // magnetometer.calibrate().await;
-    // match magnetometer.read_raw().await {
-    //     Ok(reading) => info!(
-    //         "X: {}, Y: {}, Z: {}",
-    //         reading.x_unscaled(),
-    //         reading.y_unscaled(),
-    //         reading.z_unscaled()
-    //     ),
-    //     Err(e) => error!("Error"),
-    // }
     embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
     
 
@@ -261,11 +211,6 @@ info!("entering loop");
     ]};
     let _ = display.show_message(display_info).await;
     
-    // accelerometer.switch_to_low_power_mode().await.expect("accel failed to switch to low power mode");
-    // accelerometer.configure_wake_on_movement(0x02, 0x20).await;
-    // accelerometer.wait_for_motion().await;
-
-
 
     }
 }
