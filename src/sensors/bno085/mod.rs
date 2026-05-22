@@ -1,5 +1,6 @@
 pub mod bno085;
 pub mod bno08x;
+pub mod reports;
 
 /// Errors in this crate
 #[derive(Debug)]

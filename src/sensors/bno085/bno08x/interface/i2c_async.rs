@@ -12,7 +12,6 @@ pub struct I2cInterfaceAsync<I2C, HINT> {
     i2c_port: I2C,
     common: I2cCommon,
     hint: HINT,
-
 }
 
 impl<I2C, HINT, CommE> I2cInterfaceAsync<I2C, HINT>
@@ -20,12 +19,9 @@ where
     I2C: embedded_hal_async::i2c::I2c<Error = CommE>,
     HINT: embedded_hal::digital::InputPin + embedded_hal_async::digital::Wait,
 {
-
     pub fn hint_low(&mut self) -> bool {
         self.hint.is_low().unwrap_or_default()
     }
-
-
 
     pub fn default(i2c: I2C, hint: HINT) -> Self {
         Self::new(i2c, DEFAULT_ADDRESS, hint)
@@ -166,7 +162,6 @@ where
                 }
                 Err(e) => return Err(e),
             }
-
         }
 
         Ok(0)
@@ -176,7 +171,7 @@ where
     async fn read_packet(&mut self, recv_buf: &mut [u8]) -> Result<usize, Self::SensorError> {
         // #[cfg(feature = "rttdebug")]
         // rprintln!("rpkt");
-        if  self.hint.is_high().unwrap_or(true) {
+        if self.hint.is_high().unwrap_or(true) {
             return Ok(0);
         }
 

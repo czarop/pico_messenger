@@ -35,15 +35,16 @@ impl<'a> Drawable for BatteryIcon<'a> {
             .draw(display)?;
 
         if BatteryLevel::Charging == *self.level {
+            let cx = self.position.x + 10;
+            let cy = self.position.y + 4;
 
-        let cx = self.position.x + 10;
-        let cy = self.position.y + 4;
-
-        Line::new(Point::new(cx - 2, cy), Point::new(cx + 2, cy))
-            .into_styled(stroke).draw(display)?;
-        Line::new(Point::new(cx, cy - 2), Point::new(cx, cy + 2))
-            .into_styled(stroke).draw(display)?;
-                } 
+            Line::new(Point::new(cx - 2, cy), Point::new(cx + 2, cy))
+                .into_styled(stroke)
+                .draw(display)?;
+            Line::new(Point::new(cx, cy - 2), Point::new(cx, cy + 2))
+                .into_styled(stroke)
+                .draw(display)?;
+        }
 
         let bars = match self.level {
             BatteryLevel::Empty => 0,

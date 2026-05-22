@@ -1,16 +1,16 @@
-
 use crate::display::screen::{self, StatusScreen};
 
-use crate::sensors::bno085::bno085::{self, ENTER_SLEEP, ImuReport};
+use crate::sensors::bno085::bno085::{self, ENTER_SLEEP};
+use crate::sensors::bno085::reports::ImuReport;
 use crate::sensors::{battery_meter, temp_sensor};
 use crate::state::{EmbassyStorage, load_state};
-use embassy_sync::channel::Channel;
-use heapless::String;
 use core::fmt::Write;
 use core::str::FromStr;
 use defmt::*;
 use embassy_embedded_hal::shared_bus::asynch::i2c;
 use embassy_executor::Spawner;
+use embassy_sync::channel::Channel;
+use heapless::String;
 
 use embassy_rp::i2c::I2c;
 use embassy_rp::peripherals::{DMA_CH0, I2C0, I2C1, PIO0};
@@ -77,7 +77,7 @@ pub async fn startup(spawner: Spawner) {
         embassy_rp::i2c::Config::default(),
     );
     let i2c0_bus = I2C0_BUS.init(Mutex::new(i2c0));
-    
+
     let i2c1 = I2c::new_async(
         p.I2C1,
         p.PIN_7,
@@ -87,7 +87,6 @@ pub async fn startup(spawner: Spawner) {
     );
     let i2c1_bus = I2C1_BUS.init(Mutex::new(i2c1));
 
-    
     let i2c_for_bno085: i2c::I2cDevice<
         '_,
         CriticalSectionRawMutex,
@@ -110,99 +109,106 @@ pub async fn startup(spawner: Spawner) {
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
     > = i2c::I2cDevice::new(i2c0_bus);
 
-
-
     let mut display = screen::Display::new(i2c_for_display).await;
     let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_senor);
     let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
-    let mut bno085 = bno085::Imu::new(i2c_for_bno085,  p.PIN_3, p.PIN_2).await;
+    let mut bno085 = bno085::Imu::new(i2c_for_bno085, p.PIN_3, p.PIN_2).await;
 
-    bno085.enable_rotation_vector(1000).await.expect("Failed to enable rotation vector");
+    bno085
+        .enable_rotation_vector(1000)
+        .await
+        .expect("Failed to enable rotation vector");
     // bno085.enable_activity_recognition().await.expect("failed to initiate activity type");
-    bno085.enable_significant_motion_wake().await.expect("failed to enable shake detection");
+    bno085
+        .enable_significant_motion_wake()
+        .await
+        .expect("failed to enable shake detection");
 
+    spawner.spawn(
+        bno085::imu_task(
+            bno085,
+            // IMU_COMMANDS.receiver(),
+            IMU_REPORTS.sender(),
+        )
+        .expect("failed to spawn imu task"),
+    );
 
-    spawner.spawn(bno085::imu_task(
-        bno085,
-        // IMU_COMMANDS.receiver(),
-        IMU_REPORTS.sender(),
-    ).expect("failed to spawn imu task"));
+    spawner.spawn(bno085::ui_task(IMU_REPORTS.receiver()).expect("failed to spawn imu task"));
 
-        spawner.spawn(bno085::ui_task(
-        IMU_REPORTS.receiver(),
-    ).expect("failed to spawn imu task"));
+    info!("entering loop");
 
-
-info!("entering loop");
-
-    loop{
-
+    loop {
         ENTER_SLEEP.signal(());
 
-    let soc = match max17048.soc().await {
-        Ok(soc) => soc,
-        Err(e) => {
-            error!("Failed to read state of charge: {:?}", e);
-            0
-        }
-    };
+        let soc = match max17048.soc().await {
+            Ok(soc) => soc,
+            Err(e) => {
+                error!("Failed to read state of charge: {:?}", e);
+                0
+            }
+        };
 
-    let is_charging = match max17048.charge_rate().await {
-        Ok(rate) => {
-            info!("Charge rate: {}%/hr", rate);
-            rate > 0.0
-        },
-        Err(e) => {
-            error!("Failed to read charge rate: {:?}", e);
-            false
-        }
-    };
+        let is_charging = match max17048.charge_rate().await {
+            Ok(rate) => {
+                info!("Charge rate: {}%/hr", rate);
+                rate > 0.0
+            }
+            Err(e) => {
+                error!("Failed to read charge rate: {:?}", e);
+                false
+            }
+        };
 
-    let (temp_reading, humidity_reading) = match temp_senor.read_temperature(temp_sensor::TempSensorPowerMode::LPM3).await {
-        Ok(r) => {
-            let mut temp: String<24> = String::new();
-            core::write!(temp, "Temp: {:.1}C", r.temperature).unwrap();
-            let mut humidity: String<24> = String::new();
-            core::write!(humidity, "Humidity: {:.1}%", r.humidity).unwrap();
-            (Some(temp), Some(humidity))
-        },
-        Err(e) => {
-            error!("{:?}",defmt::Debug2Format(&e));
-            let err_string:String<24>  = String::from_str("Temp Senor Error").expect("error making error string");
-            (Some(err_string), None)
-        },
-    };
-    let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
-   
-    
-    
-    let display_info = StatusScreen{ 
-        battery: battery_level, 
-        message: [
-            temp_reading.clone(),
-            humidity_reading.clone(),
-            Some(heapless::String::<24>::from_str("Updated!").expect("could not make heapless string")),
-            None,
-            None
-    ]};
-    let _ = display.show_message(display_info).await;
+        let (temp_reading, humidity_reading) = match temp_senor
+            .read_temperature(temp_sensor::TempSensorPowerMode::LPM3)
+            .await
+        {
+            Ok(r) => {
+                let mut temp: String<24> = String::new();
+                core::write!(temp, "Temp: {:.1}C", r.temperature).unwrap();
+                let mut humidity: String<24> = String::new();
+                core::write!(humidity, "Humidity: {:.1}%", r.humidity).unwrap();
+                (Some(temp), Some(humidity))
+            }
+            Err(e) => {
+                error!("{:?}", defmt::Debug2Format(&e));
+                let err_string: String<24> =
+                    String::from_str("Temp Senor Error").expect("error making error string");
+                (Some(err_string), None)
+            }
+        };
+        let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
 
+        let display_info = StatusScreen {
+            battery: battery_level,
+            message: [
+                temp_reading.clone(),
+                humidity_reading.clone(),
+                Some(
+                    heapless::String::<24>::from_str("Updated!")
+                        .expect("could not make heapless string"),
+                ),
+                None,
+                None,
+            ],
+        };
+        let _ = display.show_message(display_info).await;
 
-    embassy_time::Timer::after(embassy_time::Duration::from_secs(15)).await;
-    
+        embassy_time::Timer::after(embassy_time::Duration::from_secs(15)).await;
 
-
-    let display_info = StatusScreen{ 
-        battery: battery_level, 
-        message: [
-            temp_reading,
-            humidity_reading,
-            Some(heapless::String::<24>::from_str("Shake to update").expect("could not make heapless string")),
-            None,
-            None
-    ]};
-    let _ = display.show_message(display_info).await;
-    
-
+        let display_info = StatusScreen {
+            battery: battery_level,
+            message: [
+                temp_reading,
+                humidity_reading,
+                Some(
+                    heapless::String::<24>::from_str("Shake to update")
+                        .expect("could not make heapless string"),
+                ),
+                None,
+                None,
+            ],
+        };
+        let _ = display.show_message(display_info).await;
     }
 }

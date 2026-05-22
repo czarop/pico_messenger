@@ -30,8 +30,23 @@ pub enum WrapperError<E> {
     NoDataAvailable,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum LastUpdate {
+    RotationVector([f32; 4], f32), // quaternion, accuracy
+    LinearAccel([f32; 3]),
+    Gyro([f32; 3]),
+    SignificantMotion(bool),
+    StepCount(u16),
+    StepDetected,
+    ShakeDetected,
+    Activity(Activity),
+    StabilityDetected(bool),
+    PickupDetected(bool),
+    None,
+}
+
 pub struct BNO085Async<SI> {
-    pub sensor_interface: SI,
+    sensor_interface: SI,
     /// each communication channel with the device has its own sequence number
     sequence_numbers: [u8; NUM_CHANNELS],
     /// buffer for building and sending packet to the sensor hub
@@ -76,6 +91,7 @@ pub struct BNO085Async<SI> {
     activity: Activity,
     stability_detected: bool,
     pickup_detected: bool,
+    last_update: LastUpdate,
 }
 
 impl<SI> BNO085Async<SI> {
@@ -106,6 +122,7 @@ impl<SI> BNO085Async<SI> {
             activity: Activity::Unknown,
             stability_detected: false,
             pickup_detected: false,
+            last_update: LastUpdate::None,
         }
     }
 
@@ -268,43 +285,49 @@ where
             match report_id {
                 SENSOR_REPORTID_ROTATION_VECTOR => {
                     self.update_rotation_quaternion(data1, data2, data3, data4, data5);
+                    self.last_update = LastUpdate::RotationVector(self.rotation_quaternion, self.rot_quaternion_acc);
                 }
                 SENSOR_REPORTID_LINEAR_ACCEL => {
                     self.update_linear_accel(data1, data2, data3);
+                    self.last_update = LastUpdate::LinearAccel(self.linear_accel);
                 }
                 SENSOR_REPORTID_GYRO => {
                     self.update_gyro_cal(data1, data2, data3);
+                    self.last_update = LastUpdate::Gyro(self.gyro);
                 }
                 SENSOR_REPORTID_SIGNIFICANT_MOTION => {
                     self.significant_motion_detected = data1 == 1;
+                    self.last_update = LastUpdate::SignificantMotion(self.significant_motion_detected);
                 }
                 SENSOR_REPORTID_STEP_COUNTER => {
                     self.step_count = data1 as u16;
+                    self.last_update = LastUpdate::StepCount(self.step_count);
                 }
                 SENSOR_REPORTID_STEP_DETECTOR => {
                     self.step_detected = true;
+                    self.last_update = LastUpdate::StepDetected;
                 }
                 SENSOR_REPORTID_SHAKE_DETECTOR => {
                     self.shake_detected = true;
+                    self.last_update = LastUpdate::ShakeDetected;
                 }
                 SENSOR_REPORTID_ACTIVITY_CLASSIFIER => {
-                    // byte 4 = page+EOS, byte 5 = most likely state
-                    // outer_cursor points past the 4 standard header bytes
                     if outer_cursor + 1 < received_len {
                         let most_likely = self.packet_recv_buf[outer_cursor + 1];
                         self.activity = Activity::from(most_likely);
                     }
+                    self.last_update = LastUpdate::Activity(self.activity);
                 }
                 SENSOR_REPORTID_STABILITY_DETECTOR => {
-                    // data1: 1 = entered stable, 2 = exited stable
                     self.stability_detected = data1 == 1;
+                    self.last_update = LastUpdate::StabilityDetected(self.stability_detected);
                 }
                 SENSOR_REPORTID_PICKUP_DETECTOR => {
                     self.pickup_detected = data1 >= 1;
+                    self.last_update = LastUpdate::PickupDetected(self.pickup_detected);
                 }
                 _ => {
-                    // debug_println!("uhr: {:X}", report_id);
-                    // debug_println!("uhr: 0x{:X} {:?}  ", report_id, &self.packet_recv_buf[start_cursor..start_cursor+5]);
+                    self.last_update = LastUpdate::None;
                 }
             }
         }
@@ -686,18 +709,12 @@ where
             .await
     }
 
-    pub async fn enable_step_detector(
-        &mut self,
-    ) -> Result<(), WrapperError<SE>> {
-        self.enable_report(SENSOR_REPORTID_STEP_DETECTOR, 0)
-            .await
+    pub async fn enable_step_detector(&mut self) -> Result<(), WrapperError<SE>> {
+        self.enable_report(SENSOR_REPORTID_STEP_DETECTOR, 0).await
     }
 
-    pub async fn enable_shake_detector(
-        &mut self,
-    ) -> Result<(), WrapperError<SE>> {
-        self.enable_report(SENSOR_REPORTID_SHAKE_DETECTOR, 0)
-            .await
+    pub async fn enable_shake_detector(&mut self) -> Result<(), WrapperError<SE>> {
+        self.enable_report(SENSOR_REPORTID_SHAKE_DETECTOR, 0).await
     }
 
     pub fn significant_motion_detected(&mut self) -> bool {
@@ -734,18 +751,13 @@ where
             .await
     }
 
-    pub async fn enable_stability_detector(
-        &mut self,
-    ) -> Result<(), WrapperError<SE>> {
+    pub async fn enable_stability_detector(&mut self) -> Result<(), WrapperError<SE>> {
         self.enable_report(SENSOR_REPORTID_STABILITY_DETECTOR, 0)
             .await
     }
 
-    pub async fn enable_pickup_detector(
-        &mut self,
-    ) -> Result<(), WrapperError<SE>> {
-        self.enable_report(SENSOR_REPORTID_PICKUP_DETECTOR, 0)
-            .await
+    pub async fn enable_pickup_detector(&mut self) -> Result<(), WrapperError<SE>> {
+        self.enable_report(SENSOR_REPORTID_PICKUP_DETECTOR, 0).await
     }
 
     pub fn stability_detected(&mut self) -> bool {
@@ -797,43 +809,92 @@ where
         Ok(())
     }
 
-pub async fn enable_stability_detector_wake(&mut self) -> Result<(), WrapperError<SE>> {
-    let micros: u32 = 100000;
-    let cmd_body: [u8; 17] = [
-        SHUB_REPORT_SET_FEATURE_CMD,
-        SENSOR_REPORTID_STABILITY_DETECTOR,
-        0x0C, // wake bit set
-        0, 0,
-        (micros & 0xFFu32) as u8,
-        (micros.shr(8) & 0xFFu32) as u8,
-        (micros.shr(16) & 0xFFu32) as u8,
-        (micros.shr(24) & 0xFFu32) as u8,
-        0, 0, 0, 0,
-        0, 0, 0, 0,
-    ];
-    self.send_packet(CHANNEL_HUB_CONTROL, &cmd_body).await?;
-    Ok(())
+    pub async fn enable_stability_detector_wake(
+        &mut self,
+        report_interval_micros: u32,
+    ) -> Result<(), WrapperError<SE>> {
+        let micros: u32 = report_interval_micros;
+        let cmd_body: [u8; 17] = [
+            SHUB_REPORT_SET_FEATURE_CMD,
+            SENSOR_REPORTID_STABILITY_DETECTOR,
+            0x0C, // wake bit set
+            0,
+            0,
+            (micros & 0xFFu32) as u8,
+            (micros.shr(8) & 0xFFu32) as u8,
+            (micros.shr(16) & 0xFFu32) as u8,
+            (micros.shr(24) & 0xFFu32) as u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
+        self.send_packet(CHANNEL_HUB_CONTROL, &cmd_body).await?;
+        Ok(())
+    }
+    pub async fn enable_shake_detector_wake(
+        &mut self,
+        report_interval_micros: u32,
+    ) -> Result<(), WrapperError<SE>> {
+        let micros: u32 = report_interval_micros;
+        let cmd_body: [u8; 17] = [
+            SHUB_REPORT_SET_FEATURE_CMD,
+            SENSOR_REPORTID_SHAKE_DETECTOR, // 0x19
+            0x0C,                           // wake bit set
+            0,
+            0,
+            (micros & 0xFFu32) as u8,
+            (micros.shr(8) & 0xFFu32) as u8,
+            (micros.shr(16) & 0xFFu32) as u8,
+            (micros.shr(24) & 0xFFu32) as u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
+        self.send_packet(CHANNEL_HUB_CONTROL, &cmd_body).await?;
+        Ok(())
+    }
 }
-pub async fn enable_shake_detector_wake(&mut self) -> Result<(), WrapperError<SE>> {
-    let micros: u32 = 1000000;
-    let cmd_body: [u8; 17] = [
-        SHUB_REPORT_SET_FEATURE_CMD,
-        SENSOR_REPORTID_SHAKE_DETECTOR, // 0x19
-        0x0C, // wake bit set
-        0, 0,
-        (micros & 0xFFu32) as u8,
-        (micros.shr(8) & 0xFFu32) as u8,
-        (micros.shr(16) & 0xFFu32) as u8,
-        (micros.shr(24) & 0xFFu32) as u8,
-        0, 0, 0, 0,
-        0, 0, 0, 0,
-    ];
-    self.send_packet(CHANNEL_HUB_CONTROL, &cmd_body).await?;
-    Ok(())
+
+impl<I2C, HINT, CommE> BNO085Async<super::interface::I2cInterfaceAsync<I2C, HINT>>
+where
+    I2C: embedded_hal_async::i2c::I2c<Error = CommE>,
+    HINT: embedded_hal::digital::InputPin + embedded_hal_async::digital::Wait,
+{
+    pub fn hint_low(&mut self) -> bool {
+        self.sensor_interface.hint_low()
+    }
+
+    pub async fn wait_for_hint(&mut self) {
+        self.sensor_interface.wait_for_hint().await.ok();
+    }
+
+    pub async fn wait_for_hint_high(&mut self) {
+        self.sensor_interface.wait_for_hint_high().await.ok();
+    }
+
+    pub fn get_last_update(&self) -> LastUpdate {
+        self.last_update
+    }
 }
 
-
-
+impl<I2C, CommE>
+    BNO085Async<super::interface::I2cInterfaceAsync<I2C, embassy_rp::gpio::Input<'static>>>
+where
+    I2C: embedded_hal_async::i2c::I2c<Error = CommE>,
+{
+    pub fn dormant_sleep_on_hint(&mut self) {
+        self.sensor_interface.dormant_sleep_on_hint();
+    }
 }
 
 const Q8_SCALE: f32 = 1.0 / ((1 << 8) as f32);

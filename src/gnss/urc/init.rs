@@ -22,11 +22,15 @@ impl GnssInitUrc {
         match raw.status {
             0 => Some(Self::NotStarted),
             1 => Some(Self::Starting),
-            2 => Some(Self::Ready { nbiot_delay: raw.nbiot_delay }),
+            2 => Some(Self::Ready {
+                nbiot_delay: raw.nbiot_delay,
+            }),
             3 => Some(Self::DownloadingSupl),
             4 => Some(Self::SuplFailed),
             5 => Some(Self::SystemFailure),
-            6 => Some(Self::StartupDelayed { nbiot_delay: raw.nbiot_delay }),
+            6 => Some(Self::StartupDelayed {
+                nbiot_delay: raw.nbiot_delay,
+            }),
             _ => None,
         }
     }

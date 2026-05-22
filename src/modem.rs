@@ -136,10 +136,10 @@ async fn modem_task(
         match cmd {
             ModemCommand::GetSignalStrength => {
                 match client.send(&commands::GetManufacturerId).await {
-                    Ok(resp) => { /* update some shared Signal or signal strength */ },
+                    Ok(resp) => { /* update some shared Signal or signal strength */ }
                     Err(e) => { /* log/handle */ }
                     #[allow(unreachable_patterns)]
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
             }
             ModemCommand::SendSms { number, body } => {

@@ -67,8 +67,6 @@
 //     }
 // }
 
-
-
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 //!
 //! Copyright (c) 2021–2024 The rp-rs Developers
@@ -77,7 +75,7 @@
 //!
 //! Set up linker scripts
 
-use std::fs::{ File, read_to_string };
+use std::fs::{File, read_to_string};
 use std::io::Write;
 use std::path::PathBuf;
 

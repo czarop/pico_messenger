@@ -19,10 +19,7 @@ impl Heading {
         let qz = quat[2];
         let qw = quat[3];
 
-        let heading_rad = f32::atan2(
-            2.0 * (qw * qz + qx * qy),
-            1.0 - 2.0 * (qy * qy + qz * qz),
-        );
+        let heading_rad = f32::atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz));
 
         let mut heading_deg = heading_rad.to_degrees();
         if heading_deg < 0.0 {
@@ -32,15 +29,15 @@ impl Heading {
         let deg = heading_deg as u16;
 
         match deg {
-            338..=360 | 0..=22  => Heading::North(deg),
-            23..=67              => Heading::NorthEast(deg),
-            68..=112             => Heading::East(deg),
-            113..=157            => Heading::SouthEast(deg),
-            158..=202            => Heading::South(deg),
-            203..=247            => Heading::SouthWest(deg),
-            248..=292            => Heading::West(deg),
-            293..=337            => Heading::NorthWest(deg),
-            _                    => Heading::North(deg),
+            338..=360 | 0..=22 => Heading::North(deg),
+            23..=67 => Heading::NorthEast(deg),
+            68..=112 => Heading::East(deg),
+            113..=157 => Heading::SouthEast(deg),
+            158..=202 => Heading::South(deg),
+            203..=247 => Heading::SouthWest(deg),
+            248..=292 => Heading::West(deg),
+            293..=337 => Heading::NorthWest(deg),
+            _ => Heading::North(deg),
         }
     }
 }
@@ -48,13 +45,13 @@ impl Heading {
 impl core::fmt::Display for Heading {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Heading::North(d)     => write!(f, "North({}°)", d),
+            Heading::North(d) => write!(f, "North({}°)", d),
             Heading::NorthEast(d) => write!(f, "NorthEast({}°)", d),
-            Heading::East(d)      => write!(f, "East({}°)", d),
+            Heading::East(d) => write!(f, "East({}°)", d),
             Heading::SouthEast(d) => write!(f, "SouthEast({}°)", d),
-            Heading::South(d)     => write!(f, "South({}°)", d),
+            Heading::South(d) => write!(f, "South({}°)", d),
             Heading::SouthWest(d) => write!(f, "SouthWest({}°)", d),
-            Heading::West(d)      => write!(f, "West({}°)", d),
+            Heading::West(d) => write!(f, "West({}°)", d),
             Heading::NorthWest(d) => write!(f, "NorthWest({}°)", d),
         }
     }

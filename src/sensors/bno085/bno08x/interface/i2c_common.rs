@@ -1,4 +1,4 @@
-use super::{SensorCommon, PACKET_HEADER_LENGTH};
+use super::{PACKET_HEADER_LENGTH, SensorCommon};
 
 /// the i2c address normally used by BNO080
 pub const DEFAULT_ADDRESS: u8 = 0x4A;
@@ -51,9 +51,7 @@ impl I2cCommon {
     }
 
     pub(crate) fn packet_len_from_header(&self) -> usize {
-        SensorCommon::parse_packet_header(
-            &self.seg_recv_buf[..PACKET_HEADER_LENGTH],
-        )
+        SensorCommon::parse_packet_header(&self.seg_recv_buf[..PACKET_HEADER_LENGTH])
     }
 
     pub(crate) fn record_received_packet(&mut self, packet_len: usize) {
@@ -62,10 +60,7 @@ impl I2cCommon {
         }
     }
 
-    pub(crate) fn sized_read(
-        total_packet_len: usize,
-        packet_recv_buf: &mut [u8],
-    ) -> SizedRead {
+    pub(crate) fn sized_read(total_packet_len: usize, packet_recv_buf: &mut [u8]) -> SizedRead {
         SizedRead::new(total_packet_len, packet_recv_buf)
     }
 }
@@ -90,18 +85,14 @@ impl SizedRead {
     }
 
     pub(crate) fn direct_read_len(&self) -> Option<usize> {
-        if self.total_packet_len < MAX_SEGMENT_READ && self.total_packet_len > 0
-        {
+        if self.total_packet_len < MAX_SEGMENT_READ && self.total_packet_len > 0 {
             Some(self.total_packet_len)
         } else {
             None
         }
     }
 
-    pub(crate) fn finish_direct_read(
-        &mut self,
-        already_read_len: usize,
-    ) -> usize {
+    pub(crate) fn finish_direct_read(&mut self, already_read_len: usize) -> usize {
         self.already_read_len = already_read_len;
         self.already_read_len
     }
@@ -111,8 +102,7 @@ impl SizedRead {
     }
 
     pub(crate) fn next_segment_read_len(&self) -> usize {
-        let whole_segment_length =
-            self.remaining_body_len + PACKET_HEADER_LENGTH;
+        let whole_segment_length = self.remaining_body_len + PACKET_HEADER_LENGTH;
         if whole_segment_length > MAX_SEGMENT_READ {
             MAX_SEGMENT_READ
         } else {
@@ -137,11 +127,9 @@ impl SizedRead {
             segment_read_len
         };
 
-        packet_recv_buf
-            [self.already_read_len..self.already_read_len + transcribe_len]
+        packet_recv_buf[self.already_read_len..self.already_read_len + transcribe_len]
             .copy_from_slice(
-                &seg_recv_buf[transcribe_start_idx
-                    ..transcribe_start_idx + transcribe_len],
+                &seg_recv_buf[transcribe_start_idx..transcribe_start_idx + transcribe_len],
             );
         self.already_read_len += transcribe_len;
 
@@ -184,16 +172,10 @@ mod tests {
         assert_eq!(first_segment_len, MAX_SEGMENT_READ);
 
         let mut first_segment = [0; SEG_RECV_BUF_LEN];
-        for (idx, byte) in
-            first_segment[..first_segment_len].iter_mut().enumerate()
-        {
+        for (idx, byte) in first_segment[..first_segment_len].iter_mut().enumerate() {
             *byte = idx as u8;
         }
-        read.transcribe_segment(
-            first_segment_len,
-            &first_segment,
-            &mut recv_buf,
-        );
+        read.transcribe_segment(first_segment_len, &first_segment, &mut recv_buf);
         assert_eq!(read.already_read_len(), MAX_SEGMENT_READ);
         assert_eq!(&recv_buf[..6], &[0, 1, 2, 3, 4, 5]);
 
@@ -203,11 +185,7 @@ mod tests {
         let mut second_segment = [0; SEG_RECV_BUF_LEN];
         second_segment[..second_segment_len].fill(0xEE);
         second_segment[PACKET_HEADER_LENGTH..second_segment_len].fill(0xBB);
-        read.transcribe_segment(
-            second_segment_len,
-            &second_segment,
-            &mut recv_buf,
-        );
+        read.transcribe_segment(second_segment_len, &second_segment, &mut recv_buf);
 
         assert_eq!(read.already_read_len(), total_packet_len);
         assert_eq!(&recv_buf[240..276], &[0xBB; 36]);

@@ -67,17 +67,16 @@ impl GnssFix {
     pub fn start_with_at_report(
         urc_events: GnssUrcEvents,
         report_output: heapless::Vec<AtFormatArg, 4>,
-        update_interval_secs: Option<u32>
+        update_interval_secs: Option<u32>,
     ) -> Self {
-
         let format_argument: u32 = report_output.iter().map(|&v| v as u32).sum::<u32>();
 
-        Self { 
-            start_stop: GnssFixState::Start, 
-            event_enable: urc_events, 
-            format_type: GnssFormatType::AT, 
-            format_argument, 
-            period: update_interval_secs
+        Self {
+            start_stop: GnssFixState::Start,
+            event_enable: urc_events,
+            format_type: GnssFormatType::AT,
+            format_argument,
+            period: update_interval_secs,
         }
     }
 
@@ -89,19 +88,19 @@ impl GnssFix {
 
     //     let format_argument = report_output.iter().map(|&v| v as u32).sum();
 
-    //     Self { 
-    //         start_stop: GnssFixState::Start, 
-    //         event_enable: urc_events, 
-    //         format_type: GnssFormatType::NMEA, 
-    //         format_argument, 
+    //     Self {
+    //         start_stop: GnssFixState::Start,
+    //         event_enable: urc_events,
+    //         format_type: GnssFormatType::NMEA,
+    //         format_argument,
     //         period: update_interval_secs
     //     }
     // }
 
     pub fn stop_updates() -> Self {
-        Self { 
-            start_stop: GnssFixState::Stop, 
-            ..Default::default() 
+        Self {
+            start_stop: GnssFixState::Stop,
+            ..Default::default()
         }
     }
 }

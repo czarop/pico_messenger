@@ -90,23 +90,22 @@ pub enum GnssFixUrc {
 impl GnssFixUrc {
     pub fn from_raw(raw: GnssFixUrcRaw) -> Option<Self> {
         match raw.validity {
-            0 => {
-                Some(Self::Fix(GnssLocation {
-                    position: GnssPosition {
-                        week_number: raw.week_number?,
-                        time_of_week: raw.time_of_week?,
-                        latitude: raw.latitude?,
-                        longitude: raw.longitude?,
-                        altitude: raw.altitude?,
-                        accuracy: raw.accuracy?,
-                    },
-                    accuracy: GnssAccuracy { 
-                        std_dev_altitude: raw.std_dev_altitude?, 
-                        hdop: raw.hdop?, 
-                        gdop: raw.gdop?, 
-                        pdop: raw.pdop? }
-                }))
-            },
+            0 => Some(Self::Fix(GnssLocation {
+                position: GnssPosition {
+                    week_number: raw.week_number?,
+                    time_of_week: raw.time_of_week?,
+                    latitude: raw.latitude?,
+                    longitude: raw.longitude?,
+                    altitude: raw.altitude?,
+                    accuracy: raw.accuracy?,
+                },
+                accuracy: GnssAccuracy {
+                    std_dev_altitude: raw.std_dev_altitude?,
+                    hdop: raw.hdop?,
+                    gdop: raw.gdop?,
+                    pdop: raw.pdop?,
+                },
+            })),
             v => Some(Self::Searching(GnssValidity::from(v))),
         }
     }

@@ -11,11 +11,11 @@ use embedded_graphics::{
 
 use oled_async::{Builder, prelude::*};
 
-use crate::{sensors::battery_meter::BatteryLevel, display::battery::BatteryIcon};
+use crate::{display::battery::BatteryIcon, sensors::battery_meter::BatteryLevel};
 
 pub struct StatusScreen {
     pub battery: BatteryLevel,
-    pub message: [Option<heapless::String::<24>>; 5],
+    pub message: [Option<heapless::String<24>>; 5],
 }
 
 impl Drawable for StatusScreen {
@@ -37,15 +37,13 @@ impl Drawable for StatusScreen {
         for (i, line) in self.message.iter().enumerate() {
             if let Some(text) = line.as_deref() {
                 Text::with_baseline(
-                text,
-                Point::new(0, 2 + i as i32 * 12),
-                text_style,
-                Baseline::Top,
-            )
-            .draw(display)?;
-
+                    text,
+                    Point::new(0, 2 + i as i32 * 12),
+                    text_style,
+                    Baseline::Top,
+                )
+                .draw(display)?;
             }
-            
         }
 
         Ok(())
@@ -96,14 +94,10 @@ impl Display {
     }
 
     // pub async fn show_status(&mut self, battery: u8, signal: i8) { ... }
-    pub async fn show_message(
-        &mut self,
-        display_info: StatusScreen
-    ) -> Result<(), DisplayError> {
+    pub async fn show_message(&mut self, display_info: StatusScreen) -> Result<(), DisplayError> {
         let display = &mut self.inner;
         display.clear();
 
-        
         display_info
             .draw(display)
             .map_err(|_| DisplayError::Flush)?;
