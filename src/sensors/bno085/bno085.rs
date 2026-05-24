@@ -16,7 +16,6 @@ use embassy_time::Delay;
 
 use crate::sensors::bno085::reports::ImuReport;
 
-
 type ImuI2C = I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, I2C1, Async>>;
 
 pub type ImuDevice = Imu<ImuI2C, Input<'static>>;
@@ -168,7 +167,6 @@ impl<E: core::fmt::Debug> From<WrapperError<Error<E, ()>>> for ImuError<E> {
     }
 }
 
-
 pub static ENTER_SLEEP: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 #[embassy_executor::task]
@@ -183,12 +181,10 @@ pub async fn imu_task(
                 // normal data flow
                 imu.inner.handle_one_message(&mut Delay, 10).await;
 
-
                 let report = ImuReport::from(imu.inner.get_last_update());
                 if !matches!(report, ImuReport::None) {
                     let _ = sender.try_send(report);
                 }
-
             }
             embassy_futures::select::Either::Second(_) => {
                 // enter low power — whole board sleeps until motion

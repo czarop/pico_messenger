@@ -90,6 +90,7 @@ embedded-graphics = { version = "0.8", features = ["defmt"] }
 display-interface-i2c = "0.5"
 thiserror = {version = "2", default-features = false}
 micromath = "2"
+base64ct = "1"
 
 [patch.crates-io]
 embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }

@@ -1,4 +1,3 @@
-use atat::atat_derive::AtatEnum;
 use serde::Deserialize;
 
 #[derive(Clone, Debug, PartialEq)]

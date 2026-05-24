@@ -285,7 +285,10 @@ where
             match report_id {
                 SENSOR_REPORTID_ROTATION_VECTOR => {
                     self.update_rotation_quaternion(data1, data2, data3, data4, data5);
-                    self.last_update = LastUpdate::RotationVector(self.rotation_quaternion, self.rot_quaternion_acc);
+                    self.last_update = LastUpdate::RotationVector(
+                        self.rotation_quaternion,
+                        self.rot_quaternion_acc,
+                    );
                 }
                 SENSOR_REPORTID_LINEAR_ACCEL => {
                     self.update_linear_accel(data1, data2, data3);
@@ -297,7 +300,8 @@ where
                 }
                 SENSOR_REPORTID_SIGNIFICANT_MOTION => {
                     self.significant_motion_detected = data1 == 1;
-                    self.last_update = LastUpdate::SignificantMotion(self.significant_motion_detected);
+                    self.last_update =
+                        LastUpdate::SignificantMotion(self.significant_motion_detected);
                 }
                 SENSOR_REPORTID_STEP_COUNTER => {
                     self.step_count = data1 as u16;

@@ -1,18 +1,7 @@
-use atat::atat_derive::AtatUrc;
+use atat::{AtatIngress, DefaultDigester, Ingress, ResponseSlot, UrcChannel, asynch::Client};
 
-use crate::gnss::urc::{fix::GnssFixUrcRaw, init::GnssInitUrcRaw};
-
-use atat::{
-    AtatIngress, DefaultDigester, Ingress, ResponseSlot, UrcChannel,
-    asynch::{AtatClient, Client},
-};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use heapless::String;
-
-use crate::mqtt::{
-    commands::{self, ModemCommand},
-    urc,
-};
+use crate::modem::command::modem_command_task;
+use crate::modem::urc::{ModemUrc, modem_urc_task};
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::{PIN_12, PIN_13, UART0};
 use embassy_rp::{
@@ -20,23 +9,14 @@ use embassy_rp::{
     uart::{self, BufferedInterruptHandler, BufferedUart, BufferedUartRx},
 };
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
-const INGRESS_BUF_SIZE: usize = 1024; // where incoming requests sit
-const URC_CAPACITY: usize = 128; // number of broadcast 'messages' in the queue
-const URC_SUBSCRIBERS: usize = 3; // number of async tasks listening for broadcast messages
+pub const INGRESS_BUF_SIZE: usize = 1024; // where incoming requests sit
+pub const URC_CAPACITY: usize = 128; // number of broadcast 'messages' in the queue
+pub const URC_SUBSCRIBERS: usize = 3; // number of async tasks listening for broadcast messages
 
 bind_interrupts!(struct Irqs {
     UART0_IRQ => BufferedInterruptHandler<UART0>;
 }); // interrupt ongoing tasks to add incoming messages to the buffer
-
-#[derive(Clone, AtatUrc)]
-pub enum ModemUrc {
-    #[at_urc("#GNSSINIT")]
-    Status(GnssInitUrcRaw),
-    #[at_urc("#GNSSFIX")]
-    Location(GnssFixUrcRaw),
-}
 
 pub async fn initiate_modem(
     spawner: Spawner,
@@ -74,14 +54,14 @@ pub async fn initiate_modem(
 
     // uses a Digester (which knows the AT command syntax) to turn raw bytes into Rust enums
     let ingress = Ingress::new(
-        DefaultDigester::<urc::Urc>::default(),
+        DefaultDigester::<ModemUrc>::default(),
         INGRESS_BUF.init([0; INGRESS_BUF_SIZE]),
         &RES_SLOT,
         &URC_CHANNEL,
     );
 
     spawner.spawn(ingress_task(ingress, reader).unwrap());
-    spawner.spawn(urc_task(URC_CHANNEL.subscribe().unwrap()).unwrap());
+    spawner.spawn(modem_urc_task(URC_CHANNEL.subscribe().unwrap()).unwrap());
 
     // for messaging
     let client = CLIENT.init(Client::new(
@@ -91,7 +71,7 @@ pub async fn initiate_modem(
         atat::Config::default(),
     ));
 
-    spawner.spawn(modem_task(client).unwrap());
+    spawner.spawn(modem_command_task(client).unwrap());
     // returns here - everything is owned by the spawned tasks
 }
 
@@ -100,7 +80,7 @@ pub async fn initiate_modem(
 async fn ingress_task(
     mut ingress: Ingress<
         'static,
-        DefaultDigester<urc::Urc>,
+        DefaultDigester<ModemUrc>,
         ModemUrc,
         INGRESS_BUF_SIZE,
         URC_CAPACITY,
@@ -109,49 +89,4 @@ async fn ingress_task(
     mut reader: BufferedUartRx,
 ) -> ! {
     ingress.read_from(&mut reader).await
-}
-
-// react to messages
-#[embassy_executor::task]
-async fn urc_task(
-    mut sub: atat::UrcSubscription<'static, ModemUrc, URC_CAPACITY, URC_SUBSCRIBERS>,
-) -> ! {
-    loop {
-        let urc = sub.next_message_pure().await;
-        match urc {
-            ModemUrc::Status(gnss_init_urc_raw) => todo!(),
-            ModemUrc::Location(gnss_fix_urc_raw) => todo!(),
-        }
-    }
-}
-
-pub static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, ModemCommand, 4> = Channel::new();
-
-#[embassy_executor::task]
-async fn modem_task(
-    client: &'static mut Client<'static, uart::BufferedUartTx, INGRESS_BUF_SIZE>,
-) -> ! {
-    loop {
-        let cmd = COMMAND_CHANNEL.receive().await;
-        match cmd {
-            ModemCommand::GetSignalStrength => {
-                match client.send(&commands::GetManufacturerId).await {
-                    Ok(resp) => { /* update some shared Signal or signal strength */ }
-                    Err(e) => { /* log/handle */ }
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::SendSms { number, body } => {
-                client
-                    .send(&commands::ExampleWithFields {
-                        arg1: 0,
-                        arg2: String::<64>::new(),
-                    })
-                    .await
-                    .ok();
-            }
-            ModemCommand::Connect => todo!(),
-        }
-    }
 }
