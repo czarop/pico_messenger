@@ -4,3 +4,4 @@ pub mod urc;
 pub mod error;
 pub mod communication;
 pub mod network;
+pub mod power_state;

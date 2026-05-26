@@ -1,5 +1,5 @@
 use defmt::{error, info};
-use heapless::String;
+
 
 use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
 use crate::{
@@ -10,20 +10,23 @@ use crate::{
     },
     mqtt::{
         commands::{
-            config::MqttConfig, connect::MqttConnect, socket::SocketCreate,
+            config::MqttConfig, connect::{
+                MqttConnect,MqttConnectStub}, socket::SocketCreate,
             subscribe::MqttSubscribe,
-        },
-        state,
-        urc::ip_stack,
+        }, state, urc::ip_stack
     },
 };
 
 #[embassy_executor::task]
 pub async fn network_task(
     mut sub: atat::UrcSubscription<'static, ModemUrc, URC_CAPACITY, URC_SUBSCRIBERS>,
+    socket_info: SocketCreate,
+    mqtt_config: MqttConfig,
+    mqtt_connection: MqttConnectStub,
+    mqtt_subscription: MqttSubscribe
 ) -> ! {
     let state_sender = communication::MQTT_STATE.sender();
-    loop {
+    'outer: loop {
         // wait for IP
         state_sender.send(state::MqttStackState::Down);
         loop {
@@ -37,17 +40,11 @@ pub async fn network_task(
 
         // bring up the mqtt stack
         let mut retries = 0;
-        let mut socket_id = 0;
+        let socket_id;
         loop {
-            if retries > 9 {
-                error!(
-                    "Failed to create socket after {} retries, giving up",
-                    retries
-                );
-                panic!("Failed to create socket");
-            }
+            
             COMMAND_CHANNEL
-                .send(command::ModemCommand::SocketCreate(SocketCreate::default()))
+                .send(command::ModemCommand::SocketCreate(socket_info.clone()))
                 .await;
 
             match communication::SOCKET_RESULT.wait().await {
@@ -59,58 +56,83 @@ pub async fn network_task(
                 Err(e) => {
                     error!("Failed to create socket: {:?}", e);
                     retries += 1;
-                    continue;
+                    if retries > 9 {
+                        error!("Failed to create socket 10 times, Aborting");
+                        continue 'outer;
+                    }
                 } // back to the outer loop
             }
         }
 
         info!("Socket created, configuring MQTT stack");
 
-        COMMAND_CHANNEL
-            .send(command::ModemCommand::MqttConfig(MqttConfig::default()))
-            .await;
+        let mut retries = 0;
+        loop{
+            COMMAND_CHANNEL
+                .send(command::ModemCommand::MqttConfig(mqtt_config.clone()))
+                .await;
 
-        match communication::NETWORK_RESULT.wait().await {
-            Ok(()) => {
-                info!("Mqtt config set");
+            match communication::NETWORK_RESULT.wait().await {
+                Ok(()) => {
+                    info!("Mqtt config set");
+                    break
+                }
+                Err(e) => {
+                    error!("Failed to configure MQTT stack: {:?}", e);
+                    retries += 1;
+                    if retries > 9 {
+                        error!("Failed to configure MQTT stack 10 times, Aborting");
+                        continue 'outer;
+                    }
+                },
             }
-            Err(e) => error!("Failed to configure MQTT stack: {:?}", e),
         }
 
+        let mut retries = 0;
+        let mqtt_connection = MqttConnect::from_stub(socket_id, mqtt_connection.clone());
+        loop{
         COMMAND_CHANNEL
-            .send(command::ModemCommand::MqttConnect(MqttConnect::new(
-                socket_id,
-                String::try_from("test.test.test.test").unwrap(),
-                1883,
-                String::try_from("user").unwrap(),
-                String::try_from("pass").unwrap(),
-                String::try_from("pico-messenger/status").unwrap(),
-                String::try_from("offline").unwrap(),
-            )))
+            .send(command::ModemCommand::MqttConnect(mqtt_connection.clone()))
             .await;
 
         match communication::NETWORK_RESULT.wait().await {
             Ok(()) => {
                 info!("Mqtt connected");
+                break
             }
-            Err(e) => error!("Failed to configure MQTT stack: {:?}", e),
+            Err(e) => {
+                error!("Failed to connect MQTT stack: {:?}", e);
+                retries += 1;
+                if retries > 9 {
+                    error!("Failed to connect MQTT stack 10 times, Aborting");
+                    continue 'outer;
+                }
+            },
         }
+    }
 
+    let mut retries = 0;
+    loop{
         COMMAND_CHANNEL
-            .send(command::ModemCommand::MqttSubscribe(MqttSubscribe {
-                topic: String::try_from("my_topic").unwrap(),
-                qos: crate::mqtt::commands::MqttQos::AtLeastOnce,
-            }))
+            .send(command::ModemCommand::MqttSubscribe(mqtt_subscription.clone()))
             .await;
 
         match communication::NETWORK_RESULT.wait().await {
             Ok(()) => {
                 info!("Mqtt subscribed");
                 state_sender.send(state::MqttStackState::MqttReady);
+                break;
             }
-            Err(e) => error!("Failed to configure MQTT stack: {:?}", e),
+            Err(e) => {
+                error!("Failed to subscribe to MQTT: {:?}", e);
+                retries += 1;
+                if retries > 9 {
+                    error!("Failed to subscribe to MQTT 10 times, Aborting");
+                    continue 'outer;
+                }
+            },
         }
-
+    }
         // monitor for disconnect
         loop {
             match sub.next_message_pure().await {
