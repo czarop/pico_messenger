@@ -18,6 +18,32 @@ pub struct MqttConnect {
     will_retain_flag: u8,       // 0 = not retained, 1 = retained (new subscribers see last state)
 }
 
+impl MqttConnect {
+    pub fn new(
+        socket_id: u8, 
+        broker_address: String<50>, 
+        broker_port: u16,
+        username: String<25>,
+        passwd: String<50>, 
+        will_topic: String<50>,
+        will_message: String<50>
+
+    ) -> Self {
+        Self {
+            context_id: 5,
+            socket_id,
+            broker_address,
+            broker_port,
+            username,
+            passwd,
+            will_topic,
+            will_message,
+            will_qos: 1,
+            will_retain_flag: 1,
+        }
+    }
+}
+
 impl Default for MqttConnect {
     fn default() -> Self {
         Self {

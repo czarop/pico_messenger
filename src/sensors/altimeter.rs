@@ -1,4 +1,4 @@
-use bmp390::{Address, Bmp390, Configuration};
+use bmp390::{Bmp390, Configuration};
 
 pub struct Altimeter<I> {
     sensor: Bmp390<I>,
@@ -15,8 +15,13 @@ where
         Ok(Self { sensor })
     }
 
-    pub async fn read_altitude(&mut self) -> f32 {
-        let res = self.sensor.altitude().await.unwrap();
-        res.into()
+    pub async fn read_altitude(&mut self) -> Result<f32, bmp390::Error<E>> {
+        let res = self.sensor.measure().await?;
+        Ok(res.altitude.get::<uom::si::length::meter>())
+    }
+
+    pub async fn read_pressure(&mut self) -> Result<f32, bmp390::Error<E>> {
+        let res = self.sensor.measure().await?;
+        Ok(res.pressure.get::<uom::si::pressure::pascal>())
     }
 }

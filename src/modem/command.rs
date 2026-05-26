@@ -1,10 +1,11 @@
 use super::setup::INGRESS_BUF_SIZE;
 use crate::gnss::commands::{deinit::GnssDeinit, fix::GnssFix, init::GnssInit};
+use crate::modem::communication::COMMAND_CHANNEL;
 use crate::mqtt::commands::{config, connect, publish, socket, subscribe};
 use atat::asynch::AtatClient;
 use atat::asynch::Client;
 use embassy_rp::uart;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
+
 
 pub enum ModemCommand {
     GnssInit(GnssInit),
@@ -20,7 +21,7 @@ pub enum ModemCommand {
     MqttUnsubscribe(subscribe::MqttUnsubscribe),
 }
 
-pub static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, ModemCommand, 4> = Channel::new();
+
 
 #[embassy_executor::task]
 pub async fn modem_command_task(

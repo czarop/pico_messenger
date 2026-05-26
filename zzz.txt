@@ -74,3 +74,34 @@ loop {
 }
 Two endpoints, both plain HTTPS GETs, both work with exactly the TLS stack you've already got running.
 
+
+┌─────────────────────────────────────────────────────┐
+│                    app_task                         │
+│  - motion state machine                             │
+│  - publish decisions                                │
+│  - handles #MQTTRECV                                │
+└────────┬───────────────┬────────────────────────────┘
+         │ reads         │ reads
+         ▼               ▼
+  Watch<MqttState>   Watch<LocationPayload>
+         ▲               ▲
+         │ writes        │ writes
+┌────────┴──────┐  ┌─────┴──────────┐
+│ network_task  │  │   gnss_task    │
+│ - connection  │  │ - init/deinit  │
+│ - reconnect   │  │ - fix tracking │
+│ - subscribe   │  └────────────────┘
+└───────────────┘
+         │                │
+         └───────┬─────────┘
+                 │ all send via
+                 ▼
+         COMMAND_CHANNEL
+                 │
+                 ▼
+┌────────────────────────────┐
+│        modem_task          │
+│  - owns atat client        │
+│  - executes AT commands    │
+│  - signals results         │
+└────────────────────────────┘

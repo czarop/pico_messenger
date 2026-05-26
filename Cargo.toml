@@ -92,6 +92,7 @@ thiserror = {version = "2", default-features = false}
 micromath = "2"
 base64ct = "1"
 bmp390 = "0.4.3"
+uom = {version = "0.36", default-features = false}
 
 [patch.crates-io]
 embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
