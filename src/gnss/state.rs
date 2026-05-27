@@ -14,4 +14,3 @@ impl Deref for GNSSState {
         &self.latest_location
     }
 }
-

@@ -8,4 +8,17 @@ pub enum ModemError {
     ParseError,
     #[error("invalid response")]
     InvalidResponse,
+    #[error("modem error: {0:?}")]
+    Modem(atat::Error),
+}
+
+impl From<atat::Error> for ModemError {
+    fn from(e: atat::Error) -> Self {
+        match e {
+            atat::Error::Timeout => Self::Timeout,
+            atat::Error::Parse => Self::ParseError,
+            atat::Error::InvalidResponse => Self::InvalidResponse,
+            other => Self::Modem(other),
+        }
+    }
 }
