@@ -103,15 +103,23 @@ pub async fn startup(spawner: Spawner) {
         CriticalSectionRawMutex,
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
     > = i2c::I2cDevice::new(i2c0_bus);
-    let i2c_for_temp_senor: i2c::I2cDevice<
+    let i2c_for_temp_sensor: i2c::I2cDevice<
+        '_,
+        CriticalSectionRawMutex,
+        I2c<'static, I2C0, embassy_rp::i2c::Async>,
+    > = i2c::I2cDevice::new(i2c0_bus);
+    let mut i2c_for_pressure_sensor: i2c::I2cDevice<
         '_,
         CriticalSectionRawMutex,
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
     > = i2c::I2cDevice::new(i2c0_bus);
 
+    i2c_scan(& mut i2c_for_pressure_sensor).await;
+
     let mut display = screen::Display::new(i2c_for_display).await;
-    let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_senor);
+    let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_sensor);
     let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
+    let mut pressure_sensor = crate::sensors::altimeter::Altimeter::new(i2c_for_pressure_sensor).await.expect("could not initiate pressure sensor");
     let mut bno085 = bno085::Imu::new(i2c_for_bno085, p.PIN_3, p.PIN_2).await;
 
     bno085
@@ -136,14 +144,15 @@ pub async fn startup(spawner: Spawner) {
     spawner.spawn(bno085::ui_task(IMU_REPORTS.receiver()).expect("failed to spawn imu task"));
 
     info!("entering loop");
+    
 
     loop {
-        ENTER_SLEEP.signal(());
+        // ENTER_SLEEP.signal(());
 
         let soc = match max17048.soc().await {
             Ok(soc) => soc,
             Err(e) => {
-                error!("Failed to read state of charge: {:?}", e);
+                // error!("Failed to read state of charge: {:?}", e);
                 0
             }
         };
@@ -154,7 +163,7 @@ pub async fn startup(spawner: Spawner) {
                 rate > 0.0
             }
             Err(e) => {
-                error!("Failed to read charge rate: {:?}", e);
+                // error!("Failed to read charge rate: {:?}", e);
                 false
             }
         };
@@ -179,6 +188,18 @@ pub async fn startup(spawner: Spawner) {
         };
         let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
 
+        let altitude = match pressure_sensor.read_altitude().await {
+            Ok(alt) => {
+                let mut alt_str: String<24> = String::new();
+                core::write!(alt_str, "Alt: {:.1}m", alt).unwrap();
+                Some(alt_str)
+            }
+            Err(e) => {
+                error!("Failed to read altitude: {:?}", e);
+                None
+            }
+        };
+
         let display_info = StatusScreen {
             battery: battery_level,
             message: [
@@ -188,7 +209,7 @@ pub async fn startup(spawner: Spawner) {
                     heapless::String::<24>::from_str("Updated!")
                         .expect("could not make heapless string"),
                 ),
-                None,
+                altitude,
                 None,
             ],
         };
@@ -196,19 +217,32 @@ pub async fn startup(spawner: Spawner) {
 
         embassy_time::Timer::after(embassy_time::Duration::from_secs(15)).await;
 
-        let display_info = StatusScreen {
-            battery: battery_level,
-            message: [
-                temp_reading,
-                humidity_reading,
-                Some(
-                    heapless::String::<24>::from_str("Shake to update")
-                        .expect("could not make heapless string"),
-                ),
-                None,
-                None,
-            ],
-        };
-        let _ = display.show_message(display_info).await;
+        // let display_info = StatusScreen {
+        //     battery: battery_level,
+        //     message: [
+        //         temp_reading,
+        //         humidity_reading,
+        //         Some(
+        //             heapless::String::<24>::from_str("Shake to update")
+        //                 .expect("could not make heapless string"),
+        //         ),
+        //         None,
+        //         None,
+        //     ],
+        // };
+        // let _ = display.show_message(display_info).await;
     }
+}
+
+
+async fn i2c_scan(i2c: &mut impl embedded_hal_async::i2c::I2c) {
+    info!("Scanning I2C bus...");
+    for addr in 0x08..=0x77u8 {
+        let mut buf = [0u8; 1];
+        match i2c.read(addr, &mut buf).await {
+            Ok(_) => info!("Found device at 0x{:02X}", addr),
+            Err(_) => {}
+        }
+    }
+    info!("Scan complete");
 }

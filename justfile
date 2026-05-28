@@ -9,7 +9,7 @@ pico2:
 
 
 challenger:
-    picotool uf2 convert target/thumbv8m.main-none-eabihf/release/pico_messenger -t elf out.uf2 --family rp2350-arm-s
+    DEV_BOARD=challenger picotool uf2 convert target/thumbv8m.main-none-eabihf/release/pico_messenger -t elf out.uf2 --family rp2350-arm-s
 
 transfer:
     picotool load out.uf2 --verify
@@ -18,5 +18,7 @@ reboot:
     picotool reboot
 
 
+runc:
+    DEV_BOARD=challenger cargo run --release
 run:
     cargo run --release

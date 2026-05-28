@@ -11,7 +11,7 @@ where
     pub async fn new(i2c: I) -> Result<Self, bmp390::Error<E>> {
         let delay = embassy_time::Delay;
         let config = Configuration::default();
-        let sensor = Bmp390::try_new(i2c, bmp390::Address::Up, delay, &config).await?;
+        let sensor = Bmp390::try_new(i2c, bmp390::Address::Down, delay, &config).await?;
         Ok(Self { sensor })
     }
 

@@ -113,6 +113,19 @@ fn main() {
         } else {
             target = "thumbv8m.main-none-eabihf";
         }
+        let dev_board = std::env::var("DEV_BOARD").unwrap_or_default();
+        if dev_board == "challenger" {
+            let memory_x = include_bytes!("challenger.x");
+            let mut f = File::create(out.join("memory.x")).unwrap();
+            f.write_all(memory_x).unwrap();
+            println!("cargo:rerun-if-changed=challenger.x");
+        } else {
+            let memory_x = include_bytes!("rp2350.x");
+            let mut f = File::create(out.join("memory.x")).unwrap();
+            f.write_all(memory_x).unwrap();
+            println!("cargo::rustc-cfg=rp2350");
+            println!("cargo:rerun-if-changed=rp2350.x");
+        }
         let memory_x = include_bytes!("rp2350.x");
         let mut f = File::create(out.join("memory.x")).unwrap();
         f.write_all(memory_x).unwrap();
