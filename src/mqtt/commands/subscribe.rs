@@ -3,7 +3,7 @@ use heapless::String;
 
 use crate::mqtt::commands::{MqttQos, OkResponse};
 
-#[derive(Clone, AtatCmd)]
+#[derive(Clone, AtatCmd, PartialEq)]
 #[at_cmd("#MQTTSUB", OkResponse, timeout_ms = 10000)]
 pub struct MqttSubscribe {
     pub topic: String<50>, // supports wildcards: + = single level, # = multi-level

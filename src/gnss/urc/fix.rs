@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::gnss::GnssError;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum GnssValidity {
     Valid,
@@ -86,26 +88,30 @@ pub enum GnssFixUrc {
     Fix(GnssLocation),
 }
 
+fn field<T>(opt: Option<T>, name: &str) -> Result<T, GnssError> {
+    opt.ok_or_else(|| GnssError::MissingField(heapless::String::try_from(name).unwrap_or_default()))
+}
+
 impl GnssFixUrc {
-    pub fn from_raw(raw: GnssFixUrcRaw) -> Option<Self> {
+    pub fn try_from_raw(raw: GnssFixUrcRaw) -> Result<Self, GnssError> {
         match raw.validity {
-            0 => Some(Self::Fix(GnssLocation {
+            0 => Ok(Self::Fix(GnssLocation {
                 position: GnssPosition {
-                    week_number: raw.week_number?,
-                    time_of_week: raw.time_of_week?,
-                    latitude: raw.latitude?,
-                    longitude: raw.longitude?,
-                    altitude: raw.altitude?,
-                    accuracy: raw.accuracy?,
+                    week_number: field(raw.week_number, "week_number")?,
+                    time_of_week: field(raw.time_of_week, "time_of_week")?,
+                    latitude: field(raw.latitude, "latitude")?,
+                    longitude: field(raw.longitude, "longitude")?,
+                    altitude: field(raw.altitude, "altitude")?,
+                    accuracy: field(raw.accuracy, "accuracy")?,
                 },
                 accuracy: GnssAccuracy {
-                    std_dev_altitude: raw.std_dev_altitude?,
-                    hdop: raw.hdop?,
-                    gdop: raw.gdop?,
-                    pdop: raw.pdop?,
+                    std_dev_altitude: field(raw.std_dev_altitude, "std_dev_altitude")?,
+                    hdop: field(raw.hdop, "hdop")?,
+                    gdop: field(raw.gdop, "gdop")?,
+                    pdop: field(raw.pdop, "pdop")?,
                 },
             })),
-            v => Some(Self::Searching(GnssValidity::from(v))),
+            v => Ok(Self::Searching(GnssValidity::from(v))),
         }
     }
 }

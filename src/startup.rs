@@ -114,12 +114,16 @@ pub async fn startup(spawner: Spawner) {
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
     > = i2c::I2cDevice::new(i2c0_bus);
 
-    i2c_scan(& mut i2c_for_pressure_sensor).await;
+    i2c_scan(&mut i2c_for_pressure_sensor).await;
 
     let mut display = screen::Display::new(i2c_for_display).await;
     let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_sensor);
     let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
-    let mut pressure_sensor = crate::sensors::altimeter::Altimeter::new(i2c_for_pressure_sensor).await.expect("could not initiate pressure sensor");
+    let my_altitude_known = 21.0;
+    let mut pressure_sensor =
+        crate::sensors::altimeter::Altimeter::new(i2c_for_pressure_sensor, Some(my_altitude_known))
+            .await
+            .expect("could not initiate pressure sensor");
     let mut bno085 = bno085::Imu::new(i2c_for_bno085, p.PIN_3, p.PIN_2).await;
 
     bno085
@@ -132,19 +136,12 @@ pub async fn startup(spawner: Spawner) {
         .await
         .expect("failed to enable shake detection");
 
-    spawner.spawn(
-        bno085::imu_task(
-            bno085,
-            // IMU_COMMANDS.receiver(),
-            IMU_REPORTS.sender(),
-        )
-        .expect("failed to spawn imu task"),
-    );
+    spawner
+        .spawn(bno085::imu_task(bno085, IMU_REPORTS.sender()).expect("failed to spawn imu task"));
 
     spawner.spawn(bno085::ui_task(IMU_REPORTS.receiver()).expect("failed to spawn imu task"));
 
     info!("entering loop");
-    
 
     loop {
         // ENTER_SLEEP.signal(());
@@ -233,7 +230,6 @@ pub async fn startup(spawner: Spawner) {
         // let _ = display.show_message(display_info).await;
     }
 }
-
 
 async fn i2c_scan(i2c: &mut impl embedded_hal_async::i2c::I2c) {
     info!("Scanning I2C bus...");

@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::gnss::GnssError;
+
 #[derive(Debug, Error, defmt::Format)]
 pub enum ModemError {
     #[error("timeout")]
@@ -10,6 +12,8 @@ pub enum ModemError {
     InvalidResponse,
     #[error("modem error: {0:?}")]
     Modem(atat::Error),
+    #[error("GNSS error: {0:?}")]
+    GnssError(GnssError),
 }
 
 impl From<atat::Error> for ModemError {

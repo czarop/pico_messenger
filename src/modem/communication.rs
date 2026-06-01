@@ -1,4 +1,6 @@
 use crate::modem::error::ModemError;
+use crate::modem::gnss::GnssCommand;
+use crate::modem::network::MqttCommand;
 use crate::mqtt::state::MqttStackState;
 use crate::{gnss::state::GNSSState, modem::command::ModemCommand};
 use embassy_sync::{
@@ -19,3 +21,7 @@ pub static PUBLISH_RESULT: Signal<CriticalSectionRawMutex, Result<(), ModemError
 
 // Issue commands to the modem task
 pub static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, ModemCommand, 4> = Channel::new();
+
+//Issue commands from app_task to control gnss
+pub static GNSS_COMMAND: Signal<CriticalSectionRawMutex, GnssCommand> = Signal::new();
+pub static MQTT_COMMAND: Signal<CriticalSectionRawMutex, MqttCommand> = Signal::new();

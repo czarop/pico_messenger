@@ -28,94 +28,72 @@ pub async fn modem_command_task(
     loop {
         let cmd = COMMAND_CHANNEL.receive().await;
         match cmd {
-            ModemCommand::GnssInit(g) => {
-                match client.send(&g).await {
-                    Ok(_) => communication::GNSS_RESULT.signal(Ok(())),
-                    Err(e) => communication::GNSS_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::GnssDeinit => {
-                match client.send(&GnssDeinit {}).await {
-                    Ok(_) => communication::GNSS_RESULT.signal(Ok(())),
-                    Err(e) => communication::GNSS_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::GetLocation(f) => {
-                match client.send(&f).await {
-                    Ok(_) => communication::GNSS_RESULT.signal(Ok(())),
-                    Err(e) => communication::GNSS_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::MqttConfig(m) => {
-                match client.send(&m).await {
-                    Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
-                    Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::SocketCreate(s) => {
-                match client.send(&s).await {
-                    Ok(r) => communication::SOCKET_RESULT.signal(Ok(r.socket_id)),
-                    Err(e) => communication::SOCKET_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::SocketClose(s) => {
-                match client.send(&s).await {
-                    Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
-                    Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::MqttConnect(m) => {
-                match client.send(&m).await {
-                    Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
-                    Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::MqttDisconnect(m) => {
-                match client.send(&m).await {
-                    Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
-                    Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::MqttPublish(m) => {
-                match client.send(&m).await {
-                    Ok(_) => communication::PUBLISH_RESULT.signal(Ok(())),
-                    Err(e) => communication::PUBLISH_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::MqttSubscribe(s) => {
-                match client.send(&s).await {
-                    Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
-                    Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
-            ModemCommand::MqttUnsubscribe(m) => {
-                match client.send(&m).await {
-                    Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
-                    Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
-                    #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
-                }
-            }
+            ModemCommand::GnssInit(g) => match client.send(&g).await {
+                Ok(_) => communication::GNSS_RESULT.signal(Ok(())),
+                Err(e) => communication::GNSS_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::GnssDeinit => match client.send(&GnssDeinit {}).await {
+                Ok(_) => communication::GNSS_RESULT.signal(Ok(())),
+                Err(e) => communication::GNSS_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::GetLocation(f) => match client.send(&f).await {
+                Ok(_) => communication::GNSS_RESULT.signal(Ok(())),
+                Err(e) => communication::GNSS_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::MqttConfig(m) => match client.send(&m).await {
+                Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
+                Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::SocketCreate(s) => match client.send(&s).await {
+                Ok(r) => communication::SOCKET_RESULT.signal(Ok(r.socket_id)),
+                Err(e) => communication::SOCKET_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::SocketClose(s) => match client.send(&s).await {
+                Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
+                Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::MqttConnect(m) => match client.send(&m).await {
+                Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
+                Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::MqttDisconnect(m) => match client.send(&m).await {
+                Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
+                Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::MqttPublish(m) => match client.send(&m).await {
+                Ok(_) => communication::PUBLISH_RESULT.signal(Ok(())),
+                Err(e) => communication::PUBLISH_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::MqttSubscribe(s) => match client.send(&s).await {
+                Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
+                Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::MqttUnsubscribe(m) => match client.send(&m).await {
+                Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
+                Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
         }
     }
 }

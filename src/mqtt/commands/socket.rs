@@ -29,6 +29,12 @@ impl Default for SocketCreate {
     }
 }
 
+impl SocketCreate{
+    pub fn context_id(&self) -> u8 {
+        self.context_id
+    }
+}
+
 // Response — captures the returned socket_id
 #[derive(Clone, AtatResp)]
 pub struct SocketCreateResponse {
@@ -38,6 +44,6 @@ pub struct SocketCreateResponse {
 #[derive(Clone, AtatCmd)]
 #[at_cmd("#SOCKETCLOSE", OkResponse, timeout_ms = 60000)]
 pub struct SocketClose {
-    context_id: u8,
-    socket_id: u8,
+    pub context_id: u8,
+    pub socket_id: u8,
 }
