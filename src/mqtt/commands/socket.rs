@@ -29,7 +29,7 @@ impl Default for SocketCreate {
     }
 }
 
-impl SocketCreate{
+impl SocketCreate {
     pub fn context_id(&self) -> u8 {
         self.context_id
     }

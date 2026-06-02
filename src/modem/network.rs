@@ -10,7 +10,6 @@ use crate::{
         urc::ModemUrc,
     },
     mqtt::{
-        self,
         commands::{
             config::MqttConfig,
             connect::{MqttConnect, MqttConnectStub, MqttDisconnect},
@@ -38,7 +37,7 @@ pub async fn network_task(
 ) -> ! {
     let mut topics_to_subscribe: heapless::Vec<MqttSubscribe, 5> = heapless::Vec::new();
     let mut subscribed_topics: heapless::Vec<MqttSubscribe, 5> = heapless::Vec::new();
-    let mut topic_to_unsubscribe: Option<String<50>> = None;
+    let mut topics_to_unsubscribe: heapless::Vec<String<50>, 5> = heapless::Vec::new();
     let state_sender = communication::MQTT_STATE.sender();
     state_sender.send(state::MqttStackState::Down);
     let mut state_watcher = MQTT_STATE.receiver().unwrap();
@@ -47,22 +46,20 @@ pub async fn network_task(
     let mut try_disconnect = false;
     let mut socket_id = 0;
     'outer: loop {
-        let mqtt_stack_state = state_watcher.try_get();
-
-        if matches!(mqtt_stack_state, Some(state::MqttStackState::Down)) && try_connect {
+        if matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_connect {
             // wait for IP
             loop {
                 if let ModemUrc::IPStackUpdate(cgev) = sub.next_message_pure().await {
                     if let ip_stack::CgevEvent::MePdnAct(5) = cgev.event() {
                         try_connect = false;
+                        state_sender.send(state::MqttStackState::IpUp);
                         break;
                     }
                 }
             }
-            state_sender.send(state::MqttStackState::IpUp);
         }
 
-        if !matches!(mqtt_stack_state, Some(state::MqttStackState::Down)) && try_disconnect {
+        if !matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_disconnect {
             for topic in subscribed_topics.iter() {
                 COMMAND_CHANNEL
                     .send(command::ModemCommand::MqttUnsubscribe(MqttUnsubscribe {
@@ -74,8 +71,7 @@ pub async fn network_task(
             subscribed_topics.clear();
 
             COMMAND_CHANNEL
-                .send(command::ModemCommand::MqttDisconnect(MqttDisconnect {
-                }))
+                .send(command::ModemCommand::MqttDisconnect(MqttDisconnect {}))
                 .await;
             let _ = communication::NETWORK_RESULT.wait().await;
 
@@ -90,7 +86,7 @@ pub async fn network_task(
             state_sender.send(state::MqttStackState::Down);
         }
 
-        if let Some(state::MqttStackState::IpUp) = mqtt_stack_state {
+        if let Some(state::MqttStackState::IpUp) = state_watcher.try_get() {
             // bring up the mqtt stack
             let mut retries = 0;
 
@@ -115,9 +111,11 @@ pub async fn network_task(
                     } // back to the outer loop
                 }
             }
-
             info!("Socket created, configuring MQTT stack");
+        }
+            
 
+        if let Some(state::MqttStackState::SocketReady(_)) = state_watcher.try_get() {
             let mut retries = 0;
             loop {
                 COMMAND_CHANNEL
@@ -163,7 +161,9 @@ pub async fn network_task(
                     }
                 }
             }
-
+        }
+        
+        if let Some(state::MqttStackState::MqttReady) = state_watcher.try_get() {
             while let Some(mqtt_subscription) = topics_to_subscribe.pop() {
                 if !subscribed_topics.is_full() {
                     let mut retries = 0;
@@ -194,32 +194,39 @@ pub async fn network_task(
                     warn!("Cannot subscribe to more mqtt topics - already at capacity");
                 }
             }
-        }
 
-        if let Some(topic_name) = topic_to_unsubscribe.take() {
-            if let Some(mqtt_subscription) =
-                subscribed_topics.iter().find(|t| t.topic == topic_name)
-            {
-                let mut retries = 0;
-                loop {
-                    COMMAND_CHANNEL
-                        .send(command::ModemCommand::MqttUnsubscribe(MqttUnsubscribe {
-                            topic: topic_name.clone(),
-                        }))
-                        .await;
+            if let Some(topic_name) = topics_to_unsubscribe.pop() {
+                if subscribed_topics
+                    .iter()
+                    .find(|t| t.topic == topic_name)
+                    .is_some()
+                {
+                    let mut retries = 0;
+                    loop {
+                        COMMAND_CHANNEL
+                            .send(command::ModemCommand::MqttUnsubscribe(MqttUnsubscribe {
+                                topic: topic_name.clone(),
+                            }))
+                            .await;
 
-                    match communication::NETWORK_RESULT.wait().await {
-                        Ok(()) => {
-                            info!("Mqtt unsubscribed");
-                            let _ = subscribed_topics.retain(|t| &t.topic != &topic_name);
-                            break;
-                        }
-                        Err(e) => {
-                            error!("Failed to unsubscribe to MQTT: {:?}", e);
-                            retries += 1;
-                            if retries > 9 {
-                                error!("Failed to unsubscribe to MQTT 10 times, Aborting");
-                                continue 'outer;
+                        match communication::NETWORK_RESULT.wait().await {
+                            Ok(()) => {
+                                info!("Mqtt unsubscribed");
+                                let _ = subscribed_topics.retain(|t| &t.topic != &topic_name);
+                                break;
+                            }
+                            Err(e) => {
+                                error!("Failed to unsubscribe to MQTT: {:?}", e);
+                                retries += 1;
+                                if retries > 9 {
+                                    error!(
+                                        "Failed to unsubscribe {} 10 times, Aborting",
+                                        &topic_name
+                                    );
+                                    // we just popped this so is fine to re-add
+                                    let _ = topics_to_unsubscribe.push(topic_name);
+                                    continue 'outer;
+                                }
                             }
                         }
                     }
@@ -238,6 +245,8 @@ pub async fn network_task(
                             "Socket closed: context_id={}, socket_id={}",
                             e.context_id, e.socket_id
                         );
+                        topics_to_subscribe = subscribed_topics;
+                        subscribed_topics = heapless::Vec::new();
                         state_sender.send(state::MqttStackState::IpUp);
                         break;
                     }
@@ -247,6 +256,8 @@ pub async fn network_task(
                         | ip_stack::CgevEvent::MePdnDeact(_)
                         | ip_stack::CgevEvent::NwPdnDeact(_) => {
                             warn!("Network detached");
+                            topics_to_subscribe = subscribed_topics;
+                            subscribed_topics = heapless::Vec::new();
                             state_sender.send(state::MqttStackState::Down);
                             break;
                         }
@@ -267,16 +278,27 @@ pub async fn network_task(
                     }
                     MqttCommand::Subscribe(topic) => {
                         if !subscribed_topics.iter().any(|t| t.topic == topic.topic) {
-                            match topics_to_subscribe.push(topic) {
-                                Ok(_) => break,
-                                Err(_) => warn!("too many topics subscribed"),
-                            };
+                            if !subscribed_topics.is_full() {
+                                match topics_to_subscribe.push(topic) {
+                                    Ok(_) => break,
+                                    Err(_) => warn!("trying to subscribe to too many topics"),
+                                };
+                            } else {
+                                warn!("Cannot subscribe to more mqtt topics - already at capacity");
+                            }
                         }
                     }
                     MqttCommand::Unsubscribe(topic) => {
                         if subscribed_topics.iter().any(|t| t.topic == topic) {
-                            topic_to_unsubscribe = Some(topic);
-                            break;
+                            match topics_to_unsubscribe.push(topic) {
+                                Ok(_) => break,
+                                Err(_) => warn!("trying to unsubscribe to too many topics"),
+                            }
+                        } else {
+                            warn!(
+                                "Cannot unsubscribe from topic {} - not currently subscribed",
+                                &topic
+                            );
                         }
                     }
                 },
