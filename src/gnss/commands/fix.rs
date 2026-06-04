@@ -63,11 +63,13 @@ impl Default for GnssFix {
     }
 }
 
+pub type GnssFixIntervalSecs = u32;
+
 impl GnssFix {
     pub fn start_with_at_report(
         urc_events: GnssUrcEvents,
         report_output: heapless::Vec<AtFormatArg, 4>,
-        update_interval_secs: Option<u32>,
+        update_interval_secs: Option<GnssFixIntervalSecs>,
     ) -> Self {
         let format_argument: u32 = report_output.iter().map(|&v| v as u32).sum::<u32>();
 
@@ -78,6 +80,16 @@ impl GnssFix {
             format_argument,
             period: update_interval_secs,
         }
+    }
+
+    pub fn start_with_at_report_defaults(
+        update_interval_secs: Option<GnssFixIntervalSecs>,
+    ) -> Self {
+        Self::start_with_at_report(
+            GnssUrcEvents::Enable,
+            heapless::Vec::from_slice(&[AtFormatArg::Position, AtFormatArg::Accuracy]).unwrap(),
+            update_interval_secs,
+        )
     }
 
     // pub fn start_with_nmea_report(

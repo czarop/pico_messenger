@@ -17,21 +17,21 @@ pub enum GnssInitUrc {
     StartupDelayed { nbiot_delay: Option<u32> },
 }
 
-impl GnssInitUrc {
-    pub fn from_raw(raw: GnssInitUrcRaw) -> Option<Self> {
+impl From<GnssInitUrcRaw> for GnssInitUrc {
+    fn from(raw: GnssInitUrcRaw) -> Self {
         match raw.status {
-            0 => Some(Self::NotStarted),
-            1 => Some(Self::Starting),
-            2 => Some(Self::Ready {
+            0 => Self::NotStarted,
+            1 => Self::Starting,
+            2 => Self::Ready {
                 nbiot_delay: raw.nbiot_delay,
-            }),
-            3 => Some(Self::DownloadingSupl),
-            4 => Some(Self::SuplFailed),
-            5 => Some(Self::SystemFailure),
-            6 => Some(Self::StartupDelayed {
+            },
+            3 => Self::DownloadingSupl,
+            4 => Self::SuplFailed,
+            5 => Self::SystemFailure,
+            6 => Self::StartupDelayed {
                 nbiot_delay: raw.nbiot_delay,
-            }),
-            _ => None,
+            },
+            _ => unreachable!("Invalid status value in GnssInitUrcRaw"),
         }
     }
 }

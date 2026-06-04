@@ -42,23 +42,9 @@ pub async fn network_task(
     state_sender.send(state::MqttStackState::Down);
     let mut state_watcher = MQTT_STATE.receiver().unwrap();
     let incoming_commands = &MQTT_COMMAND;
-    let mut try_connect = false;
     let mut try_disconnect = false;
     let mut socket_id = 0;
     'outer: loop {
-        if matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_connect {
-            // wait for IP
-            loop {
-                if let ModemUrc::IPStackUpdate(cgev) = sub.next_message_pure().await {
-                    if let ip_stack::CgevEvent::MePdnAct(5) = cgev.event() {
-                        try_connect = false;
-                        state_sender.send(state::MqttStackState::IpUp);
-                        break;
-                    }
-                }
-            }
-        }
-
         if !matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_disconnect {
             for topic in subscribed_topics.iter() {
                 COMMAND_CHANNEL
@@ -113,7 +99,6 @@ pub async fn network_task(
             }
             info!("Socket created, configuring MQTT stack");
         }
-            
 
         if let Some(state::MqttStackState::SocketReady(_)) = state_watcher.try_get() {
             let mut retries = 0;
@@ -162,7 +147,7 @@ pub async fn network_task(
                 }
             }
         }
-        
+
         if let Some(state::MqttStackState::MqttReady) = state_watcher.try_get() {
             while let Some(mqtt_subscription) = topics_to_subscribe.pop() {
                 if !subscribed_topics.is_full() {
@@ -261,18 +246,19 @@ pub async fn network_task(
                             state_sender.send(state::MqttStackState::Down);
                             break;
                         }
+                        ip_stack::CgevEvent::MePdnAct(5) => {
+                            state_sender.send(state::MqttStackState::IpUp);
+                        }
                         _ => {}
                     },
                     _ => {}
                 },
                 Either::Second(cmd) => match cmd {
                     MqttCommand::Start => {
-                        try_connect = true;
                         try_disconnect = false;
                         break;
                     }
                     MqttCommand::Stop => {
-                        try_connect = false;
                         try_disconnect = true;
                         break;
                     }
