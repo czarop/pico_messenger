@@ -1,4 +1,4 @@
-use crate::gnss::urc::{
+use crate::modem::gnss::urc::{
     fix::{GnssFixUrc, GnssLocation, GnssValidity},
     init::GnssInitUrc,
 };

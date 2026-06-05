@@ -1,7 +1,11 @@
 use atat::{AtatIngress, DefaultDigester, Ingress, ResponseSlot, UrcChannel, asynch::Client};
 
-use crate::modem::command::modem_command_task;
-use crate::modem::urc::{ModemUrc, modem_urc_task};
+
+use crate::modem::command_task::command_task;
+use crate::modem::urc::ModemUrc;
+use crate::modem::mqtt::commands::config::MqttConfig;
+use crate::modem::mqtt::commands::connect::MqttConnectStub;
+use crate::modem::mqtt::commands::socket::SocketCreate;
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::{PIN_12, PIN_13, UART0};
 use embassy_rp::{
@@ -9,10 +13,17 @@ use embassy_rp::{
     uart::{self, BufferedInterruptHandler, BufferedUart, BufferedUartRx},
 };
 use static_cell::StaticCell;
+use dotenvy_macro::dotenv;
 
 pub const INGRESS_BUF_SIZE: usize = 1024; // where incoming requests sit
 pub const URC_CAPACITY: usize = 128; // number of broadcast 'messages' in the queue
 pub const URC_SUBSCRIBERS: usize = 3; // number of async tasks listening for broadcast messages
+
+//mqtt params:
+const BROKER_ADDRESS: &str = "test.mosquitto.org";
+const BROKER_PORT: u16 = 1883;
+const WILL_TOPIC: &str = "pico/mqtt/status";
+const WILL_MESSAGE: &str = "offline";
 
 bind_interrupts!(struct Irqs {
     UART0_IRQ => BufferedInterruptHandler<UART0>;
@@ -61,7 +72,7 @@ pub async fn initiate_modem(
     );
 
     spawner.spawn(ingress_task(ingress, reader).unwrap());
-    spawner.spawn(modem_urc_task(URC_CHANNEL.subscribe().unwrap()).unwrap());
+    
 
     // for messaging
     let client = CLIENT.init(Client::new(
@@ -71,7 +82,29 @@ pub async fn initiate_modem(
         atat::Config::default(),
     ));
 
-    spawner.spawn(modem_command_task(client).unwrap());
+    spawner.spawn(command_task(client).unwrap());
+
+    let urc_subscription = URC_CHANNEL.subscribe().expect("could not subscribe to urc channel");
+    let socket = SocketCreate::new(10, 10);
+    let mqtt_config = MqttConfig::default();
+    let broker_address = heapless::String::try_from(BROKER_ADDRESS).unwrap();
+    let broker_port = BROKER_PORT;
+    let username = heapless::String::try_from(dotenv!("MQTT_USERNAME")).unwrap();
+    let passwd = heapless::String::try_from(env!("MQTT_PASSWORD")).unwrap();
+    let will_topic = heapless::String::try_from(WILL_TOPIC).unwrap();
+    let will_message = heapless::String::try_from(WILL_MESSAGE).unwrap();
+    let mqtt_connection = MqttConnectStub::new(
+        broker_address, 
+        broker_port, 
+        username, 
+        passwd, 
+        will_topic, 
+        will_message
+    );
+    spawner.spawn(crate::modem::network_task::network_task(urc_subscription, socket, mqtt_config, mqtt_connection).unwrap());
+
+    let urc_subscription = URC_CHANNEL.subscribe().expect("could not subscribe to urc channel");
+    spawner.spawn(crate::modem::gnss_task::gnss_task(urc_subscription).unwrap());
     // returns here - everything is owned by the spawned tasks
 }
 

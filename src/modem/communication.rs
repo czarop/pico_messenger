@@ -1,8 +1,8 @@
 use crate::modem::error::ModemError;
-use crate::modem::gnss::GnssCommand;
-use crate::modem::network::MqttCommand;
-use crate::mqtt::state::MqttStackState;
-use crate::{gnss::state::GNSSState, modem::command::ModemCommand};
+use crate::modem::gnss_task::GnssCommand;
+use crate::modem::network_task::MqttCommand;
+use crate::modem::mqtt::state::MqttStackState;
+use crate::{modem::gnss::state::GNSSState, modem::command_task::ModemCommand};
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel, signal::Signal, watch::Watch,
 };

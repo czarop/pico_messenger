@@ -1,6 +1,6 @@
 use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
 use crate::{
-    gnss::{
+    modem::gnss::{
         commands::{
             self,
             fix::{GnssFix, GnssFixIntervalSecs},
@@ -10,7 +10,7 @@ use crate::{
         urc::{fix::GnssFixUrc, init::GnssInitUrc},
     },
     modem::{
-        command::ModemCommand,
+        command_task::ModemCommand,
         communication::{self, COMMAND_CHANNEL, GNSS_COMMAND, GNSS_RESULT},
         urc::ModemUrc,
     },

@@ -7,10 +7,11 @@ license = "MIT or Apache-2.0"
 
 [build-dependencies]
 regex = "1.11.0"
-# dotenvy_macro = "0.15"
-# dotenvy = "0.15"
+
+dotenvy = "0.15"
 
 [dependencies]
+dotenvy_macro = "0.15"
 # cortex-m = "0.7"
 cortex-m = "0.7"
 cortex-m-rt = "0.7"

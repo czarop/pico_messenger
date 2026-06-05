@@ -1,8 +1,8 @@
 use super::setup::INGRESS_BUF_SIZE;
-use crate::gnss::commands::{deinit::GnssDeinit, fix::GnssFix, init::GnssInit};
+use crate::modem::gnss::commands::{deinit::GnssDeinit, fix::GnssFix, init::GnssInit};
 use crate::modem::communication::{self, COMMAND_CHANNEL};
 use crate::modem::error::ModemError;
-use crate::mqtt::commands::{config, connect, publish, socket, subscribe};
+use crate::modem::mqtt::commands::{config, connect, publish, socket, subscribe};
 use atat::asynch::AtatClient;
 use atat::asynch::Client;
 use embassy_rp::uart;
@@ -22,7 +22,7 @@ pub enum ModemCommand {
 }
 
 #[embassy_executor::task]
-pub async fn modem_command_task(
+pub async fn command_task(
     client: &'static mut Client<'static, uart::BufferedUartTx, INGRESS_BUF_SIZE>,
 ) -> ! {
     loop {

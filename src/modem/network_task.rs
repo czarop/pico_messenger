@@ -4,12 +4,7 @@ use heapless::String;
 
 use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
 use crate::{
-    modem::{
-        command,
-        communication::{self, COMMAND_CHANNEL, MQTT_COMMAND, MQTT_STATE},
-        urc::ModemUrc,
-    },
-    mqtt::{
+    modem::mqtt::{
         commands::{
             config::MqttConfig,
             connect::{MqttConnect, MqttConnectStub, MqttDisconnect},
@@ -18,6 +13,11 @@ use crate::{
         },
         state,
         urc::ip_stack,
+    },
+    modem::{
+        command_task,
+        communication::{self, COMMAND_CHANNEL, MQTT_COMMAND, MQTT_STATE},
+        urc::ModemUrc,
     },
 };
 
@@ -48,21 +48,25 @@ pub async fn network_task(
         if !matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_disconnect {
             for topic in subscribed_topics.iter() {
                 COMMAND_CHANNEL
-                    .send(command::ModemCommand::MqttUnsubscribe(MqttUnsubscribe {
-                        topic: topic.topic.clone(),
-                    }))
+                    .send(command_task::ModemCommand::MqttUnsubscribe(
+                        MqttUnsubscribe {
+                            topic: topic.topic.clone(),
+                        },
+                    ))
                     .await;
                 let _ = communication::NETWORK_RESULT.wait().await;
             }
             subscribed_topics.clear();
 
             COMMAND_CHANNEL
-                .send(command::ModemCommand::MqttDisconnect(MqttDisconnect {}))
+                .send(command_task::ModemCommand::MqttDisconnect(
+                    MqttDisconnect {},
+                ))
                 .await;
             let _ = communication::NETWORK_RESULT.wait().await;
 
             COMMAND_CHANNEL
-                .send(command::ModemCommand::SocketClose(SocketClose {
+                .send(command_task::ModemCommand::SocketClose(SocketClose {
                     context_id: socket_info.context_id(),
                     socket_id,
                 }))
@@ -78,7 +82,9 @@ pub async fn network_task(
 
             loop {
                 COMMAND_CHANNEL
-                    .send(command::ModemCommand::SocketCreate(socket_info.clone()))
+                    .send(command_task::ModemCommand::SocketCreate(
+                        socket_info.clone(),
+                    ))
                     .await;
 
                 match communication::SOCKET_RESULT.wait().await {
@@ -104,7 +110,7 @@ pub async fn network_task(
             let mut retries = 0;
             loop {
                 COMMAND_CHANNEL
-                    .send(command::ModemCommand::MqttConfig(mqtt_config.clone()))
+                    .send(command_task::ModemCommand::MqttConfig(mqtt_config.clone()))
                     .await;
 
                 match communication::NETWORK_RESULT.wait().await {
@@ -127,7 +133,9 @@ pub async fn network_task(
             let mqtt_connection = MqttConnect::from_stub(socket_id, mqtt_connection.clone());
             loop {
                 COMMAND_CHANNEL
-                    .send(command::ModemCommand::MqttConnect(mqtt_connection.clone()))
+                    .send(command_task::ModemCommand::MqttConnect(
+                        mqtt_connection.clone(),
+                    ))
                     .await;
 
                 match communication::NETWORK_RESULT.wait().await {
@@ -154,7 +162,7 @@ pub async fn network_task(
                     let mut retries = 0;
                     loop {
                         COMMAND_CHANNEL
-                            .send(command::ModemCommand::MqttSubscribe(
+                            .send(command_task::ModemCommand::MqttSubscribe(
                                 mqtt_subscription.clone(),
                             ))
                             .await;
@@ -189,9 +197,11 @@ pub async fn network_task(
                     let mut retries = 0;
                     loop {
                         COMMAND_CHANNEL
-                            .send(command::ModemCommand::MqttUnsubscribe(MqttUnsubscribe {
-                                topic: topic_name.clone(),
-                            }))
+                            .send(command_task::ModemCommand::MqttUnsubscribe(
+                                MqttUnsubscribe {
+                                    topic: topic_name.clone(),
+                                },
+                            ))
                             .await;
 
                         match communication::NETWORK_RESULT.wait().await {
@@ -251,6 +261,11 @@ pub async fn network_task(
                         }
                         _ => {}
                     },
+                    ModemUrc::MqttReceived(message) => {
+                        let topic = message.topic;
+                        let payload = message.payload;
+                        info!("MQTT message received: topic={}, length={}", topic, payload);
+                    }
                     _ => {}
                 },
                 Either::Second(cmd) => match cmd {

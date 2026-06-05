@@ -1,7 +1,7 @@
 use atat::atat_derive::AtatCmd;
 use heapless::String;
 
-use crate::mqtt::commands::OkResponse;
+use crate::modem::mqtt::commands::OkResponse;
 
 #[derive(Clone)]
 pub struct MqttConnectStub {

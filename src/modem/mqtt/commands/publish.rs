@@ -1,7 +1,7 @@
 use atat::atat_derive::AtatCmd;
 use heapless::String;
 
-use crate::mqtt::commands::{MqttQos, MqttRetainFlag, OkResponse};
+use crate::modem::mqtt::commands::{MqttQos, MqttRetainFlag, OkResponse};
 
 #[derive(Clone, AtatCmd)]
 #[at_cmd("#MQTTPUB", OkResponse, timeout_ms = 20000)]

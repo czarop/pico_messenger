@@ -1,8 +1,10 @@
-pub mod command;
+pub mod command_task;
 pub mod communication;
 pub mod error;
-pub mod gnss;
-pub mod network;
-pub mod power_state;
+pub mod gnss_task;
+pub mod network_task;
+pub mod interrupt;
 pub mod setup;
 pub mod urc;
+pub mod gnss;
+pub mod mqtt;

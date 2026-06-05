@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::gnss::GnssError;
+use crate::modem::gnss::GnssError;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum GnssValidity {

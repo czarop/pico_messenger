@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::gnss::GnssError;
+use crate::modem::gnss::GnssError;
 
 #[derive(Debug, Error, defmt::Format)]
 pub enum ModemError {
