@@ -1,1 +1,22 @@
-power management modem
+Its core responsibility is the wake → acquire → publish → sleep cycle. Sketch:
+On wake:
+
+Send MqttCommand::Start → watch MQTT_STATE until MqttReady
+Send GnssCommand::Start → watch GNSS_STATE until Fix
+Both ready → build payload, send MqttPublish via COMMAND_CHANNEL, await PUBLISH_RESULT
+Send MqttCommand::Stop, GnssCommand::Stop
+Sleep (POWMAN)
+
+Motion state machine running alongside:
+
+IMU reports arrive via Signal/Channel from imu_task
+Moving → short wake interval (e.g. 15 min)
+Stationary → long interval or dormant sleep until significant motion
+
+Edge cases to handle:
+
+GNSS fix timeout — publish anyway with last known location or no location
+MQTT stack fails to come up — retry or skip publish, go back to sleep
+GNSS_STATE::Error / MQTT_STATE down — handle gracefully, don't hang
+
+No URC subscription needed — everything arrives via GNSS_STATE watch, MQTT_STATE watch, PUBLISH_RESULT signal, and IMU channel.

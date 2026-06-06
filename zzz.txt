@@ -76,7 +76,7 @@ Two endpoints, both plain HTTPS GETs, both work with exactly the TLS stack you'v
 
 
 ┌─────────────────────────────────────────────────────┐
-│                    app_task                         │
+│                    modem_task                       │
 │  - motion state machine                             │
 │  - publish decisions                                │
 │  - handles #MQTTRECV                                │
@@ -100,7 +100,7 @@ Two endpoints, both plain HTTPS GETs, both work with exactly the TLS stack you'v
                  │
                  ▼
 ┌────────────────────────────┐
-│        modem_task          │
+│        modem_urc_task      │
 │  - owns atat client        │
 │  - executes AT commands    │
 │  - signals results         │

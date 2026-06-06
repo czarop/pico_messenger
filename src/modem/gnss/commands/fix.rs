@@ -1,5 +1,7 @@
 use atat::atat_derive::{AtatCmd, AtatEnum, AtatResp};
 
+use crate::modem::UpdateIntervalSecs;
+
 #[derive(AtatEnum, Clone)]
 #[repr(u8)]
 enum GnssFixState {
@@ -63,13 +65,13 @@ impl Default for GnssFix {
     }
 }
 
-pub type GnssFixIntervalSecs = u32;
+
 
 impl GnssFix {
     pub fn start_with_at_report(
         urc_events: GnssUrcEvents,
         report_output: heapless::Vec<AtFormatArg, 4>,
-        update_interval_secs: Option<GnssFixIntervalSecs>,
+        update_interval_secs: Option<UpdateIntervalSecs>,
     ) -> Self {
         let format_argument: u32 = report_output.iter().map(|&v| v as u32).sum::<u32>();
 
@@ -83,7 +85,7 @@ impl GnssFix {
     }
 
     pub fn start_with_at_report_defaults(
-        update_interval_secs: Option<GnssFixIntervalSecs>,
+        update_interval_secs: Option<UpdateIntervalSecs>,
     ) -> Self {
         Self::start_with_at_report(
             GnssUrcEvents::Enable,

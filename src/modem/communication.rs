@@ -18,6 +18,8 @@ pub static NETWORK_RESULT: Signal<CriticalSectionRawMutex, Result<(), ModemError
 pub static SOCKET_RESULT: Signal<CriticalSectionRawMutex, Result<u8, ModemError>> = Signal::new();
 pub static GNSS_RESULT: Signal<CriticalSectionRawMutex, Result<(), ModemError>> = Signal::new();
 pub static PUBLISH_RESULT: Signal<CriticalSectionRawMutex, Result<(), ModemError>> = Signal::new();
+pub static SUBSCRIBE_RESULT: Signal<CriticalSectionRawMutex, Result<heapless::String<50>, ModemError>> = Signal::new();
+pub static UNSUBSCRIBE_RESULT: Signal<CriticalSectionRawMutex, Result<heapless::String<50>, ModemError>> = Signal::new();
 
 // Issue commands to the modem task
 pub static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, ModemCommand, 4> = Channel::new();

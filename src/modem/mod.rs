@@ -8,3 +8,6 @@ pub mod setup;
 pub mod urc;
 pub mod gnss;
 pub mod mqtt;
+pub mod modem_task;
+
+pub type UpdateIntervalSecs = u32;

@@ -1,27 +1,20 @@
 use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
-use crate::{
-    modem::gnss::{
+use crate::modem::{UpdateIntervalSecs, command_task::ModemCommand, communication::{self, COMMAND_CHANNEL, GNSS_COMMAND, GNSS_RESULT}, gnss::{
         commands::{
             self,
-            fix::{GnssFix, GnssFixIntervalSecs},
+            fix::GnssFix,
             init::GnssInit,
         },
         state::{GNSSState, GnssInitState},
         urc::{fix::GnssFixUrc, init::GnssInitUrc},
-    },
-    modem::{
-        command_task::ModemCommand,
-        communication::{self, COMMAND_CHANNEL, GNSS_COMMAND, GNSS_RESULT},
-        urc::ModemUrc,
-    },
-};
+    }, urc::ModemUrc};
 use defmt::{error, info, warn};
 use embassy_futures::select::Either;
 
 pub enum GnssCommand {
-    Start(GnssInit, Option<GnssFixIntervalSecs>),
+    Start(GnssInit, Option<UpdateIntervalSecs>),
     Stop,
-    SetFrequency(GnssFixIntervalSecs),
+    SetFrequency(UpdateIntervalSecs),
 }
 
 #[embassy_executor::task]
@@ -30,7 +23,7 @@ pub async fn gnss_task(
 ) -> ! {
     let state_sender = communication::GNSS_STATE.sender();
     state_sender.send(GNSSState::Off);
-    let mut fix_interval: Option<GnssFixIntervalSecs> = None;
+    let mut fix_interval: Option<UpdateIntervalSecs> = None;
     let incoming_commands = &GNSS_COMMAND;
     let mut state_watcher = communication::GNSS_STATE.receiver().unwrap();
 

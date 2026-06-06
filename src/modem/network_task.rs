@@ -3,8 +3,7 @@ use embassy_futures::select::Either;
 use heapless::String;
 
 use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
-use crate::{
-    modem::mqtt::{
+use crate::modem::{command_task, communication::{self, COMMAND_CHANNEL, MQTT_COMMAND, MQTT_STATE, SUBSCRIBE_RESULT, UNSUBSCRIBE_RESULT}, mqtt::{
         commands::{
             config::MqttConfig,
             connect::{MqttConnect, MqttConnectStub, MqttDisconnect},
@@ -13,13 +12,7 @@ use crate::{
         },
         state,
         urc::ip_stack,
-    },
-    modem::{
-        command_task,
-        communication::{self, COMMAND_CHANNEL, MQTT_COMMAND, MQTT_STATE},
-        urc::ModemUrc,
-    },
-};
+    }, urc::ModemUrc};
 
 pub enum MqttCommand {
     Start,
@@ -170,6 +163,7 @@ pub async fn network_task(
                         match communication::NETWORK_RESULT.wait().await {
                             Ok(()) => {
                                 info!("Mqtt subscribed");
+                                SUBSCRIBE_RESULT.signal(Ok(mqtt_subscription.topic.clone()));
                                 let _ = subscribed_topics.push(mqtt_subscription);
                                 break;
                             }
@@ -177,6 +171,7 @@ pub async fn network_task(
                                 error!("Failed to subscribe to MQTT: {:?}", e);
                                 retries += 1;
                                 if retries > 9 {
+                                    SUBSCRIBE_RESULT.signal(Err(e));
                                     error!("Failed to subscribe to MQTT 10 times, Aborting");
                                     continue 'outer;
                                 }
@@ -207,6 +202,7 @@ pub async fn network_task(
                         match communication::NETWORK_RESULT.wait().await {
                             Ok(()) => {
                                 info!("Mqtt unsubscribed");
+                                UNSUBSCRIBE_RESULT.signal(Ok(topic_name.clone()));
                                 let _ = subscribed_topics.retain(|t| &t.topic != &topic_name);
                                 break;
                             }
@@ -219,6 +215,7 @@ pub async fn network_task(
                                         &topic_name
                                     );
                                     // we just popped this so is fine to re-add
+                                    UNSUBSCRIBE_RESULT.signal(Err(e));
                                     let _ = topics_to_unsubscribe.push(topic_name);
                                     continue 'outer;
                                 }
