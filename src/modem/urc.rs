@@ -11,7 +11,7 @@ use atat::atat_derive::AtatUrc;
 
 use {defmt_rtt as _, panic_probe as _};
 
-#[derive(Clone, AtatUrc)]
+#[derive(Clone, AtatUrc, defmt::Format)]
 pub enum ModemUrc {
     #[at_urc("#GNSSINIT")]
     GnssStatus(GnssInitUrcRaw),

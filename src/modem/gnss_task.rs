@@ -1,5 +1,5 @@
 use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
-use crate::modem::{UpdateIntervalSecs, command_task::ModemCommand, communication::{self, COMMAND_CHANNEL, GNSS_COMMAND, GNSS_RESULT}, gnss::{
+use crate::modem::{UpdateIntervalSecs, command_task::ModemCommand, communication::{self, COMMAND_CHANNEL, GNSS_COMMAND, GNSS_RESULT}, error::ModemError, gnss::{
         commands::{
             self,
             fix::GnssFix,
@@ -10,6 +10,7 @@ use crate::modem::{UpdateIntervalSecs, command_task::ModemCommand, communication
     }, urc::ModemUrc};
 use defmt::{error, info, warn};
 use embassy_futures::select::Either;
+use embassy_rp::gpio::Output;
 
 pub enum GnssCommand {
     Start(GnssInit, Option<UpdateIntervalSecs>),
@@ -20,7 +21,9 @@ pub enum GnssCommand {
 #[embassy_executor::task]
 pub async fn gnss_task(
     mut modem_urc_channel: atat::UrcSubscription<'static, ModemUrc, URC_CAPACITY, URC_SUBSCRIBERS>,
+    mut gnss_bias: Output<'static>,
 ) -> ! {
+    defmt::info!("gnss task spawned");
     let state_sender = communication::GNSS_STATE.sender();
     state_sender.send(GNSSState::Off);
     let mut fix_interval: Option<UpdateIntervalSecs> = None;
@@ -35,11 +38,15 @@ pub async fn gnss_task(
         )
         .await
         {
-            Either::First(urc) => match urc {
+            Either::First(urc) => {
+            info!("urc received: {}", urc);
+            match urc {
+                
                 ModemUrc::GnssStatus(raw_status) => {
                     let status = GnssInitUrc::from(raw_status);
                     match status {
                         GnssInitUrc::NotStarted => {
+                            defmt::info!("gnss off");
                             state_sender.send(GNSSState::Off);
                         }
                         GnssInitUrc::Starting => {
@@ -47,6 +54,7 @@ pub async fn gnss_task(
                             state_sender.send(GNSSState::Initialising(GnssInitState::Starting));
                         }
                         GnssInitUrc::Ready { .. } => {
+                            info!("GNSS is ready");
                             state_sender.send(GNSSState::Ready);
                             for i in 0..10 {
                                 COMMAND_CHANNEL
@@ -86,6 +94,7 @@ pub async fn gnss_task(
                                 .send(GNSSState::Initialising(GnssInitState::DownloadingSupl));
                         }
                         GnssInitUrc::SuplFailed | GnssInitUrc::SystemFailure => {
+                            info!("GNSS SUPL failed");
                             state_sender.send(GNSSState::Error(status));
                         }
                         GnssInitUrc::StartupDelayed { nbiot_delay } => {
@@ -106,9 +115,11 @@ pub async fn gnss_task(
                 ModemUrc::Location(loc) => match GnssFixUrc::try_from_raw(loc) {
                     Ok(fix_validity) => match fix_validity {
                         GnssFixUrc::Searching(_) => {
+                            info!("GNSS is acquiring");
                             state_sender.send(GNSSState::Acquiring);
                         }
                         GnssFixUrc::Fix(gnss_location) => {
+                            info!("GNSS has a fix");
                             state_sender.send(GNSSState::Fix(gnss_location));
                         }
                     },
@@ -117,7 +128,7 @@ pub async fn gnss_task(
                     }
                 },
                 _ => {}
-            },
+            }},
             Either::Second(cmd) => match cmd {
                 GnssCommand::Start(params, interval_secs) => {
                     fix_interval = interval_secs;
@@ -127,6 +138,8 @@ pub async fn gnss_task(
                         );
                         continue;
                     } else {
+                        info!("GNSS start called");
+                        gnss_bias.set_high();
                         for i in 0..10 {
                             COMMAND_CHANNEL
                                 .send(ModemCommand::GnssInit(params.clone()))
@@ -134,6 +147,11 @@ pub async fn gnss_task(
                             match GNSS_RESULT.wait().await {
                                 Ok(_) => {
                                     info!("GNSS init command sent successfully");
+                                    break;
+                                }
+                                Err(ModemError::Modem(atat::Error::CmeError(_))) => {
+                                    // GNSS already running — treat as success
+                                    info!("GNSS already initialised");
                                     break;
                                 }
                                 Err(e) => {
@@ -166,6 +184,7 @@ pub async fn gnss_task(
                                 Ok(_) => {
                                     info!("GNSS deinit command sent successfully");
                                     state_sender.send(GNSSState::Off);
+                                    gnss_bias.set_low();
                                     break;
                                 }
                                 Err(e) => {

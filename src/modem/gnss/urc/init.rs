@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, defmt::Format)]
 pub struct GnssInitUrcRaw {
     pub status: u8,
     pub nbiot_delay: Option<u32>,

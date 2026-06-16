@@ -1,7 +1,7 @@
 use heapless::String;
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, defmt::Format)]
 pub struct CgevUrc {
     pub body: String<32>, // "ME PDN ACT 5", "NW DETACH", etc.
 }

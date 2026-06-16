@@ -28,6 +28,7 @@ pub async fn network_task(
     mqtt_config: MqttConfig,
     mqtt_connection: MqttConnectStub,
 ) -> ! {
+    defmt::info!("network task spawned");
     let mut topics_to_subscribe: heapless::Vec<MqttSubscribe, 5> = heapless::Vec::new();
     let mut subscribed_topics: heapless::Vec<MqttSubscribe, 5> = heapless::Vec::new();
     let mut topics_to_unsubscribe: heapless::Vec<String<50>, 5> = heapless::Vec::new();

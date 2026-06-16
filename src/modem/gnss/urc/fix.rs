@@ -116,7 +116,7 @@ impl GnssFixUrc {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, defmt::Format)]
 pub struct GnssFixUrcRaw {
     pub validity: u8,
     pub week_number: Option<u16>,

@@ -25,6 +25,7 @@ pub enum ModemCommand {
 pub async fn command_task(
     client: &'static mut Client<'static, uart::BufferedUartTx, INGRESS_BUF_SIZE>,
 ) -> ! {
+    defmt::info!("command task spawned");
     loop {
         let cmd = COMMAND_CHANNEL.receive().await;
         match cmd {
