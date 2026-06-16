@@ -130,5 +130,25 @@ async fn ingress_task(
     >,
     mut reader: BufferedUartRx,
 ) -> ! {
-    ingress.read_from(&mut reader).await
+    // ingress.read_from(&mut reader).await
+
+    use embedded_io_async::Read;
+    loop {
+        let buf = ingress.write_buf();
+        if buf.is_empty() {
+            ingress.clear();
+            continue;
+        }
+        match reader.read(buf).await {
+            Ok(received) => {
+                if received > 0 {
+                    defmt::info!("raw rx: {:?}", &buf[..received]);
+                    ingress.advance(received).await;
+                }
+            }
+            Err(_) => {
+                ingress.clear();
+            }
+        }
+    }
 }
