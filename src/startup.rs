@@ -234,7 +234,7 @@ pub async fn startup(spawner: Spawner) {
     //     // let _ = display.show_message(display_info).await;
     // }
 
-    let gnss_bias = embassy_rp::gpio::Output::new(p.PIN_11, embassy_rp::gpio::Level::Low);
+    let gnss_bias = embassy_rp::gpio::Output::new(p.PIN_11, embassy_rp::gpio::Level::High);
     let tx_pin: embassy_rp::Peri<'static, embassy_rp::peripherals::PIN_4> = p.PIN_4;
     let rx_pin: embassy_rp::Peri<'static, embassy_rp::peripherals::PIN_5> = p.PIN_5;
     let uart: embassy_rp::Peri<'static, embassy_rp::peripherals::UART1>  = p.UART1;

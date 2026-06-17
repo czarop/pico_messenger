@@ -153,7 +153,37 @@ pub async fn gnss_task(
                                 }
                                 Err(ModemError::Modem(atat::Error::CmeError(_))) => {
                                     // GNSS already running — treat as success
-                                    info!("GNSS already initialised");
+                                    // info!("GNSS already initialised");
+                                    // break;
+                                    // GNSS already running (retained from previous session).
+                                    // No #GNSSINIT: 2 URC will come, so start fixes directly.
+                                    info!("GNSS already initialised, starting fixes directly");
+                                    state_sender.send(GNSSState::Ready);
+                                    let interval = fix_interval.take();
+                                    for j in 0..10 {
+                                        COMMAND_CHANNEL
+                                            .send(ModemCommand::GetLocation(
+                                                GnssFix::start_with_at_report_defaults(interval),
+                                            ))
+                                            .await;
+                                        match GNSS_RESULT.wait().await {
+                                            Ok(_) => {
+                                                info!("GNSS fix initiated");
+                                                break;
+                                            }
+                                            Err(e) => {
+                                                if j < 9 {
+                                                    error!("GNSS fix init failed: {:?}", e);
+                                                    embassy_time::Timer::after(
+                                                        embassy_time::Duration::from_millis(500),
+                                                    ).await;
+                                                } else {
+                                                    error!("Failed to start fixes after 10 attempts");
+                                                    state_sender.send(GNSSState::Error(GnssInitUrc::SystemFailure));
+                                                }
+                                            }
+                                        }
+                                    }
                                     break;
                                 }
                                 Err(e) => {
