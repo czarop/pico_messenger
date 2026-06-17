@@ -30,19 +30,19 @@ pub struct SuplParams {
 #[derive(Clone, AtatCmd)]
 #[at_cmd("#GNSSINIT", GnssInitResponse, timeout_ms = 10000)]
 pub struct GnssInit {
-    // #[at_arg(position = 0)]
+    #[at_arg(position = 0)]
     assistance: Assistance,
-    // #[at_arg(position = 1)]
+    #[at_arg(position = 1)]
     constellation: Constellation,
-    // #[at_arg(position = 2)]
+    #[at_arg(position = 2)]
     context_id: Option<u8>,
-    // #[at_arg(position = 3)]
+    #[at_arg(position = 3)]
     supl_server_ip: Option<String<39>>,
-    // #[at_arg(position = 4)]
+    #[at_arg(position = 4)]
     supl_server_port: Option<u16>,
-    // #[at_arg(position = 5)]
+    #[at_arg(position = 5)]
     supl_session_timeout: Option<u16>,
-    // #[at_arg(position = 6)]
+    #[at_arg(position = 6)]
     security_profile_id: Option<u8>,
 }
 

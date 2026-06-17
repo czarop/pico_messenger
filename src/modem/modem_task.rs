@@ -20,9 +20,9 @@ pub async fn modem_task(
     let mut gnss_watcher = communication::GNSS_STATE.receiver().unwrap();
     loop {
     // wait for modem ready before starting GNSS
-    embassy_time::Timer::after(Duration::from_secs(5)).await;
+    embassy_time::Timer::after(Duration::from_secs(10)).await;
 
-    communication::MQTT_COMMAND.signal(crate::modem::network_task::MqttCommand::Start);
+    // communication::MQTT_COMMAND.signal(crate::modem::network_task::MqttCommand::Start);
     
     
     if matches!(gnss_watcher.try_get(), Some(GNSSState::Off) | None) {

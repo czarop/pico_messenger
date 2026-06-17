@@ -43,8 +43,8 @@ pub async fn gnss_task(
             match urc {
                 
                 ModemUrc::GnssStatus(raw_status) => {
-                    // let status = GnssInitUrc::from(raw_status);
-                    let status = raw_status.parse();
+                    let status = GnssInitUrc::from(raw_status);
+                    // let status = raw_status.parse();
                     match status {
                         GnssInitUrc::NotStarted => {
                             defmt::info!("gnss off");
