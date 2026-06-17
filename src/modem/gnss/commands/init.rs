@@ -49,7 +49,7 @@ pub struct GnssInit {
 impl Default for GnssInit {
     fn default() -> Self {
         Self {
-            assistance: Assistance::ColdStart,
+            assistance: Assistance::Auto,
             constellation: Constellation::Gps,
             context_id: None,
             supl_server_ip: None,
