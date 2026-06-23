@@ -21,13 +21,11 @@ pub const URC_CAPACITY: usize = 128; // number of broadcast 'messages' in the qu
 pub const URC_SUBSCRIBERS: usize = 3; // number of async tasks listening for broadcast messages
 
 //mqtt params:
-const BROKER_ADDRESS: &str = "test.mosquitto.org";
-const BROKER_PORT: u16 = 1883;
 const WILL_TOPIC: &str = "pico/mqtt/status";
 const WILL_MESSAGE: &str = "offline";
 
 const GNSS_INTERVAL: u32 = 10;
-const GNSS_TOPIC: &str = "pico/mqtt/update";
+const GNSS_TOPIC: &str = "pico/mqtt/gnss_update";
 
 bind_interrupts!(struct Irqs {
     UART1_IRQ => BufferedInterruptHandler<UART1>;
@@ -92,8 +90,8 @@ pub fn initiate_modem(
     let urc_subscription = URC_CHANNEL.subscribe().expect("could not subscribe to urc channel");
     let socket = SocketCreate::new(10, 10);
     let mqtt_config = MqttConfig::default();
-    let broker_address = heapless::String::try_from(BROKER_ADDRESS).unwrap();
-    let broker_port = BROKER_PORT;
+    let broker_address = heapless::String::try_from(dotenv!("MQTT_ADDRESS")).unwrap();
+    let broker_port: u16 = dotenv!("MQTT_PORT").parse().unwrap();
     let username = heapless::String::try_from(dotenv!("MQTT_USERNAME")).unwrap();
     let passwd = heapless::String::try_from(dotenv!("MQTT_PASSWORD")).unwrap();
     let will_topic = heapless::String::try_from(WILL_TOPIC).unwrap();

@@ -19,6 +19,9 @@ reboot:
 
 
 runc:
-    DEV_BOARD=challenger cargo run --release
+    DEV_BOARD=challenger cargo run --release --bin pico_messenger
 run:
-    cargo run --release
+    cargo run --release --bin pico_messenger
+
+provision:
+    cargo run --release --bin provision

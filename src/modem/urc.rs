@@ -23,5 +23,14 @@ pub enum ModemUrc {
     SocketClosed(SocketClosedUrc),
     #[at_urc("#MQTTRECV")]
     MqttReceived(MqttRecvUrc),
+
+    #[at_urc("#SYSSTART")]
+    SysStart,
+    #[at_urc("#REBOOT_RESET")]
+    RebootReset,
+    #[at_urc("#REBOOT_HOST")]
+    RebootHost,
+    #[at_urc("#REBOOT_WD")]
+    RebootWD(heapless::String<4>),
 }
 

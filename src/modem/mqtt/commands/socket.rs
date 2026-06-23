@@ -13,6 +13,7 @@ pub struct SocketCreate {
     send_timeout: u16,
     receive_timeout: u16,
     frame_received_urc: u8, // 0 = disabled
+    security_profile_id: Option<u8>, // Some(1) = use TLS security profile 1
 }
 
 impl Default for SocketCreate {
@@ -25,6 +26,7 @@ impl Default for SocketCreate {
             send_timeout: 10,
             receive_timeout: 10,
             frame_received_urc: 0, // disabled, MQTT handles its own URCs
+            security_profile_id: Some(1)
         }
     }
 }
@@ -42,6 +44,7 @@ impl SocketCreate {
             send_timeout,
             receive_timeout,
             frame_received_urc: 0, // disabled, MQTT handles its own URCs
+            security_profile_id: Some(1)
         }
     }
 }

@@ -22,15 +22,15 @@ pub async fn modem_task(
     // wait for modem ready before starting GNSS
     embassy_time::Timer::after(Duration::from_secs(10)).await;
 
-    // communication::MQTT_COMMAND.signal(crate::modem::network_task::MqttCommand::Start);
+    communication::MQTT_COMMAND.signal(crate::modem::network_task::MqttCommand::Start);
     
     
-    if matches!(gnss_watcher.try_get(), Some(GNSSState::Off) | None) {
-        communication::GNSS_COMMAND.signal(GnssCommand::Start(
-            GnssInit::default(),
-            Some(gnss_interval),
-        ));
-    }
+    // if matches!(gnss_watcher.try_get(), Some(GNSSState::Off) | None) {
+    //     communication::GNSS_COMMAND.signal(GnssCommand::Start(
+    //         GnssInit::default(),
+    //         Some(gnss_interval),
+    //     ));
+    // }
     
     
 
@@ -38,8 +38,9 @@ pub async fn modem_task(
         let mut subscribed = false;
         loop {
             let gnss_ready = matches!(gnss_watcher.try_get(), Some(GNSSState::Fix(_)));
-
+            info!("entering loop!");
             if matches!(mqtt_watcher.try_get(), Some(MqttStackState::MqttReady)) && !subscribed {
+                info!("past if statement!");
                 let mqtt_topic_subscribe = MqttSubscribe {
                     topic: mqtt_topic.clone(),
                     qos: MqttQos::AtLeastOnce,
@@ -49,6 +50,7 @@ pub async fn modem_task(
                 );
                 match communication::SUBSCRIBE_RESULT.wait().await {
                     Ok(_) => {
+                        info!("subscribed!");
                         subscribed = true;
                     }
                     Err(e) => {
@@ -59,7 +61,12 @@ pub async fn modem_task(
                 }
             }
 
-            if subscribed && gnss_ready {
+            // if subscribed && gnss_ready {
+            //     break;
+            // }
+
+            if subscribed  {
+                info!("breaking!");
                 break;
             }
 
@@ -95,9 +102,24 @@ pub async fn modem_task(
                         warn!("implement retry loop");
                     },
                 }
+            } else {
+                info!("publishing test");
+                let publish = MqttPublish::new(mqtt_topic.clone(), heapless::String::try_from("hello").unwrap());
+                COMMAND_CHANNEL.send(ModemCommand::MqttPublish(publish)).await;
+                
+                match PUBLISH_RESULT.wait().await {
+                    Ok(_) => {
+                        info!("Published successfully");
+                        embassy_time::Timer::after(Duration::from_secs(gnss_interval as u64)).await;
+                    },
+                    Err(e) => {
+                        error!("Publish failed: {:?}", e);
+                        warn!("implement retry loop");
+                    },
+                }
             }
         }
-        Err(TimeoutError) => {
+        Err(_) => {
             let mqtt_ok = matches!(mqtt_watcher.try_get(), Some(MqttStackState::MqttReady));
             let gnss_ok = matches!(gnss_watcher.try_get(), Some(GNSSState::Fix(_)));
 

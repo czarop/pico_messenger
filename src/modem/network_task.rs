@@ -40,7 +40,9 @@ pub async fn network_task(
     let mut socket_id = 0;
     'outer: loop {
         if !matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_disconnect {
+            defmt::info!("disconnecting");
             for topic in subscribed_topics.iter() {
+                defmt::info!("unsubscribing");
                 COMMAND_CHANNEL
                     .send(command_task::ModemCommand::MqttUnsubscribe(
                         MqttUnsubscribe {
@@ -71,6 +73,7 @@ pub async fn network_task(
         }
 
         if let Some(state::MqttStackState::IpUp) = state_watcher.try_get() {
+            defmt::info!("creating socket");
             // bring up the mqtt stack
             let mut retries = 0;
 
@@ -92,6 +95,7 @@ pub async fn network_task(
                         retries += 1;
                         if retries > 9 {
                             error!("Failed to create socket 10 times, Aborting");
+                            state_sender.send(state::MqttStackState::Down);
                             continue 'outer;
                         }
                     } // back to the outer loop
@@ -101,6 +105,7 @@ pub async fn network_task(
         }
 
         if let Some(state::MqttStackState::SocketReady(_)) = state_watcher.try_get() {
+            defmt::info!("configuring mqtt");
             let mut retries = 0;
             loop {
                 COMMAND_CHANNEL
@@ -117,6 +122,7 @@ pub async fn network_task(
                         retries += 1;
                         if retries > 9 {
                             error!("Failed to configure MQTT stack 10 times, Aborting");
+                            state_sender.send(state::MqttStackState::Down);
                             continue 'outer;
                         }
                     }
@@ -126,6 +132,7 @@ pub async fn network_task(
             let mut retries = 0;
             let mqtt_connection = MqttConnect::from_stub(socket_id, mqtt_connection.clone());
             loop {
+                defmt::info!("connecting mqtt");
                 COMMAND_CHANNEL
                     .send(command_task::ModemCommand::MqttConnect(
                         mqtt_connection.clone(),
@@ -143,6 +150,7 @@ pub async fn network_task(
                         retries += 1;
                         if retries > 9 {
                             error!("Failed to connect MQTT stack 10 times, Aborting");
+                            state_sender.send(state::MqttStackState::Down);
                             continue 'outer;
                         }
                     }
@@ -151,6 +159,7 @@ pub async fn network_task(
         }
 
         if let Some(state::MqttStackState::MqttReady) = state_watcher.try_get() {
+            defmt::info!("subscribing");
             while let Some(mqtt_subscription) = topics_to_subscribe.pop() {
                 if !subscribed_topics.is_full() {
                     let mut retries = 0;
@@ -256,6 +265,8 @@ pub async fn network_task(
                         }
                         ip_stack::CgevEvent::MePdnAct(5) => {
                             state_sender.send(state::MqttStackState::IpUp);
+                            info!("Network IPuP");
+                            break;
                         }
                         _ => {}
                     },
@@ -264,11 +275,19 @@ pub async fn network_task(
                         let payload = message.payload;
                         info!("MQTT message received: topic={}, length={}", topic, payload);
                     }
+                    ModemUrc::RebootHost | ModemUrc::RebootReset | ModemUrc::RebootWD(..) | ModemUrc::SysStart => {
+                        warn!("modem rebooted, resetting mqtt network");
+                            topics_to_subscribe = subscribed_topics;
+                            subscribed_topics = heapless::Vec::new();
+                            state_sender.send(state::MqttStackState::Down);
+                            break;
+                    }
                     _ => {}
                 },
                 Either::Second(cmd) => match cmd {
                     MqttCommand::Start => {
                         try_disconnect = false;
+                        warn!("Network start called");
                         break;
                     }
                     MqttCommand::Stop => {

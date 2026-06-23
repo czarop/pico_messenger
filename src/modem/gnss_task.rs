@@ -1,16 +1,15 @@
 use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
 use crate::modem::{UpdateIntervalSecs, command_task::ModemCommand, communication::{self, COMMAND_CHANNEL, GNSS_COMMAND, GNSS_RESULT}, error::ModemError, gnss::{
-        commands::{
+         commands::{
             self,
             fix::GnssFix,
             init::GnssInit,
-        },
-        state::{GNSSState, GnssInitState},
-        urc::{fix::GnssFixUrc, init::GnssInitUrc},
+        }, state::{GNSSState, GnssInitState}, urc::{fix::GnssFixUrc, init::GnssInitUrc}
     }, urc::ModemUrc};
 use defmt::{error, info, warn};
-use embassy_futures::select::Either;
+use embassy_futures::select::{Either3};
 use embassy_rp::gpio::Output;
+use embassy_time::{Duration, Timer};
 
 pub enum GnssCommand {
     Start(GnssInit, Option<UpdateIntervalSecs>),
@@ -32,19 +31,24 @@ pub async fn gnss_task(
 
     // monitor for incoming traffic from the modem
     loop {
-        match embassy_futures::select::select(
+        let timeout = match state_watcher.try_get() {
+            Some(GNSSState::Initialising(_)) => Timer::after(Duration::from_secs(300)),
+            _ => Timer::after(Duration::from_secs(3600)),
+        };
+
+        match embassy_futures::select::select3(
             modem_urc_channel.next_message_pure(),
             incoming_commands.wait(),
+            timeout
         )
         .await
         {
-            Either::First(urc) => {
+            Either3::First(urc) => {
             info!("urc received: {}", urc);
             match urc {
                 
                 ModemUrc::GnssStatus(raw_status) => {
                     let status = GnssInitUrc::from(raw_status);
-                    // let status = raw_status.parse();
                     match status {
                         GnssInitUrc::NotStarted => {
                             defmt::info!("gnss off");
@@ -128,9 +132,14 @@ pub async fn gnss_task(
                         error!("Failed to parse GNSS location URC: {:?}", e);
                     }
                 },
+                ModemUrc::RebootHost | ModemUrc::RebootReset | ModemUrc::RebootWD(..) | ModemUrc::SysStart => {
+                    gnss_bias.set_low();
+                    state_sender.send(GNSSState::Off);
+                    fix_interval = None;
+                }
                 _ => {}
             }},
-            Either::Second(cmd) => match cmd {
+            Either3::Second(cmd) => match cmd {
                 GnssCommand::Start(params, interval_secs) => {
                     fix_interval = interval_secs;
                     if state_watcher.try_get() != Some(GNSSState::Off) {
@@ -313,6 +322,12 @@ pub async fn gnss_task(
                     }
                 }
             },
+            Either3::Third(_) => {
+                warn!("Timed out waiting for GNSS ready URC, resetting");
+                gnss_bias.set_low();
+                fix_interval = None;
+                state_sender.send(GNSSState::Off);
+            }
         }
     }
 }
