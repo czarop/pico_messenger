@@ -2,7 +2,7 @@ use super::setup::INGRESS_BUF_SIZE;
 use crate::modem::gnss::commands::{deinit::GnssDeinit, fix::GnssFix, init::GnssInit};
 use crate::modem::communication::{self, COMMAND_CHANNEL};
 use crate::modem::error::ModemError;
-use crate::modem::mqtt::commands::{config, connect, publish, socket, subscribe};
+use crate::modem::mqtt::commands::{config, connect, pdn, publish, socket, subscribe};
 use atat::asynch::AtatClient;
 use atat::asynch::Client;
 use embassy_rp::uart;
@@ -19,6 +19,8 @@ pub enum ModemCommand {
     MqttPublish(publish::MqttPublish),
     MqttSubscribe(subscribe::MqttSubscribe),
     MqttUnsubscribe(subscribe::MqttUnsubscribe),
+    GetPdpAddress(pdn::CgPaddrQuery),
+
 }
 
 #[embassy_executor::task]
@@ -92,6 +94,12 @@ pub async fn command_task(
             ModemCommand::MqttUnsubscribe(m) => match client.send(&m).await {
                 Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
                 Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
+            ModemCommand::GetPdpAddress(q) => match client.send(&q).await {
+                Ok(r) => communication::PDP_ADDRESS_RESULT.signal(Ok(r.is_active())),
+                Err(e) => communication::PDP_ADDRESS_RESULT.signal(Err(ModemError::from(e))),
                 #[allow(unreachable_patterns)]
                 _ => unreachable!(),
             },

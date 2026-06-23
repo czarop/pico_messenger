@@ -26,7 +26,7 @@ impl Default for SocketCreate {
             send_timeout: 10,
             receive_timeout: 10,
             frame_received_urc: 0, // disabled, MQTT handles its own URCs
-            security_profile_id: Some(1)
+            security_profile_id: Some(0)
         }
     }
 }
@@ -44,7 +44,7 @@ impl SocketCreate {
             send_timeout,
             receive_timeout,
             frame_received_urc: 0, // disabled, MQTT handles its own URCs
-            security_profile_id: Some(1)
+            security_profile_id: Some(0)
         }
     }
 }

@@ -291,6 +291,21 @@ async fn main(_spawner: Spawner) {
             CERT_DER.len()
         );
 
+        // Step 5: disable PSM sleep so the modem stays awake for the AT/MQTT path.
+        // #SLEEPMODE is saved to NVM and only takes effect after the reboot below.
+        // (Re-enable later for battery operation: AT#SLEEPMODE=1,<hold>,<awake>.)
+        defmt::info!("Disabling PSM sleep (AT#SLEEPMODE=0)...");
+        uart.blocking_write(b"AT#SLEEPMODE=0\r").unwrap();
+        let n = read_line(&mut uart, &mut buf);
+        log_response("SLEEPMODE response", &buf[..n]);
+
+        // Step 6: enable +CGEV packet-domain event reporting (mode 1 = forward URCs).
+        // Takes effect immediately and persists across the reset below.
+        defmt::info!("Enabling packet-domain event reporting (AT+CGEREP=1)...");
+        uart.blocking_write(b"AT+CGEREP=1\r").unwrap();
+        let n = read_line(&mut uart, &mut buf);
+        log_response("CGEREP response", &buf[..n]);
+
         defmt::info!("Saving to NVM (AT#RESET=1)...");
         uart.blocking_write(b"AT#RESET=1\r").unwrap();
         defmt::info!("Done. Wait 15s then flash main firmware.");

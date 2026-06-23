@@ -5,6 +5,7 @@ pub mod connect;
 pub mod publish;
 pub mod socket;
 pub mod subscribe;
+pub mod pdn;
 
 #[derive(Clone, AtatResp)]
 pub struct OkResponse;

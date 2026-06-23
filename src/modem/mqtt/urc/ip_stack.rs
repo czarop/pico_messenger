@@ -6,6 +6,7 @@ pub struct CgevUrc {
     pub body: String<32>, // "ME PDN ACT 5", "NW DETACH", etc.
 }
 
+#[derive(Debug, Clone, Deserialize, defmt::Format)]
 pub enum CgevEvent {
     MePdnAct(u8),   // cid
     MePdnDeact(u8), // cid
