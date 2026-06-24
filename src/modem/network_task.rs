@@ -1,5 +1,6 @@
 // use defmt::{error, info, warn};
 // use embassy_futures::select::Either;
+// use embassy_time::{Duration, Timer};
 // use heapless::String;
 
 // use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
@@ -7,6 +8,7 @@
 //         commands::{
 //             config::MqttConfig,
 //             connect::{MqttConnect, MqttConnectStub, MqttDisconnect},
+//             pdn::CgPaddrQuery,
 //             socket::{SocketClose, SocketCreate},
 //             subscribe::{MqttSubscribe, MqttUnsubscribe},
 //         },
@@ -73,6 +75,23 @@
 //         }
 
 //         if let Some(state::MqttStackState::IpUp) = state_watcher.try_get() {
+//             // Only one TCP socket exists (id 0). It can be left occupied by a previous
+//             // session or the modem's own bring-up, causing SOCKETCREATE to fail with
+//             // +CME ERROR: 2159 (max sockets reached). Close it first; the error is
+//             // benign when no socket is open. The Ok/Err result also tells us whether a
+//             // stale socket actually existed.
+//             defmt::info!("closing any stale socket before create");
+//             COMMAND_CHANNEL
+//                 .send(command_task::ModemCommand::SocketClose(SocketClose {
+//                     context_id: socket_info.context_id(),
+//                     socket_id: 0,
+//                 }))
+//                 .await;
+//             match communication::NETWORK_RESULT.wait().await {
+//                 Ok(()) => info!("closed a stale socket (id 0)"),
+//                 Err(e) => info!("no stale socket to close (expected): {:?}", e),
+//             }
+
 //             defmt::info!("creating socket");
 //             // bring up the mqtt stack
 //             let mut retries = 0;
@@ -252,10 +271,7 @@
 //                         state_sender.send(state::MqttStackState::IpUp);
 //                         break;
 //                     }
-//                     ModemUrc::IPStackUpdate(cgev) => {
-//                     defmt::info!("CGEV event: {:?}", cgev.event());
-//                     match cgev.event() {
-
+//                     ModemUrc::IPStackUpdate(cgev) => match cgev.event() {
 //                         ip_stack::CgevEvent::NwDetach
 //                         | ip_stack::CgevEvent::MeDetach
 //                         | ip_stack::CgevEvent::MePdnDeact(_)
@@ -272,7 +288,7 @@
 //                             break;
 //                         }
 //                         _ => {}
-//                     }},
+//                     },
 //                     ModemUrc::MqttReceived(message) => {
 //                         let topic = message.topic;
 //                         let payload = message.payload;
@@ -291,6 +307,39 @@
 //                     MqttCommand::Start => {
 //                         try_disconnect = false;
 //                         warn!("Network start called");
+//                         // The modem auto-activates context 5 once NB-IoT registration
+//                         // completes, which can take well over a minute on first attach.
+//                         // Poll rather than probe once, so we proceed the moment the
+//                         // context is up instead of waiting for the next orchestration tick.
+//                         // ~40 * 3s = 120s, matching modem_task's READY_TIMEOUT.
+//                         let mut seeded = false;
+//                         for _ in 0..40 {
+//                             COMMAND_CHANNEL
+//                                 .send(command_task::ModemCommand::GetPdpAddress(
+//                                     CgPaddrQuery::default(),
+//                                 ))
+//                                 .await;
+//                             match communication::PDP_ADDRESS_RESULT.wait().await {
+//                                 Ok(true) => {
+//                                     info!("PDP context active - seeding IpUp");
+//                                     state_sender.send(state::MqttStackState::IpUp);
+//                                     seeded = true;
+//                                     break;
+//                                 }
+//                                 Ok(false) => {
+//                                     info!("PDP context not active yet, polling...");
+//                                 }
+//                                 Err(e) => {
+//                                     info!("PDP query not ready ({:?}), polling...", e);
+//                                 }
+//                             }
+//                             Timer::after(Duration::from_secs(3)).await;
+//                         }
+//                         if !seeded {
+//                             warn!(
+//                                 "PDP context not active after polling - waiting for CGEV edge"
+//                             );
+//                         }
 //                         break;
 //                     }
 //                     MqttCommand::Stop => {
@@ -329,6 +378,7 @@
 // }
 use defmt::{error, info, warn};
 use embassy_futures::select::Either;
+use embassy_time::{Duration, Timer};
 use heapless::String;
 
 use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
@@ -403,6 +453,23 @@ pub async fn network_task(
         }
 
         if let Some(state::MqttStackState::IpUp) = state_watcher.try_get() {
+            // Only one TCP socket exists (id 0). It can be left occupied by a previous
+            // session or the modem's own bring-up, causing SOCKETCREATE to fail with
+            // +CME ERROR: 2159 (max sockets reached). Close it first; the error is
+            // benign when no socket is open. The Ok/Err result also tells us whether a
+            // stale socket actually existed.
+            defmt::info!("closing any stale socket before create");
+            COMMAND_CHANNEL
+                .send(command_task::ModemCommand::SocketClose(SocketClose {
+                    context_id: socket_info.context_id(),
+                    socket_id: 0,
+                }))
+                .await;
+            match communication::NETWORK_RESULT.wait().await {
+                Ok(()) => info!("closed a stale socket (id 0)"),
+                Err(e) => info!("no stale socket to close (expected): {:?}", e),
+            }
+
             defmt::info!("creating socket");
             // bring up the mqtt stack
             let mut retries = 0;
@@ -618,29 +685,38 @@ pub async fn network_task(
                     MqttCommand::Start => {
                         try_disconnect = false;
                         warn!("Network start called");
-                        // The modem auto-activates context 5 at boot and holds it across an
-                        // RP2350 reflash, so the +CGEV: ME PDN ACT 5 edge may have already
-                        // fired before we subscribed. Probe the current state instead of
-                        // waiting for an edge that won't be replayed.
-                        COMMAND_CHANNEL
-                            .send(command_task::ModemCommand::GetPdpAddress(
-                                CgPaddrQuery::default(),
-                            ))
-                            .await;
-                        match communication::PDP_ADDRESS_RESULT.wait().await {
-                            Ok(true) => {
-                                info!("PDP context already active - seeding IpUp");
-                                state_sender.send(state::MqttStackState::IpUp);
+                        // The modem auto-activates context 5 once NB-IoT registration
+                        // completes, which can take well over a minute on first attach.
+                        // Poll rather than probe once, so we proceed the moment the
+                        // context is up instead of waiting for the next orchestration tick.
+                        // ~40 * 3s = 120s, matching modem_task's READY_TIMEOUT.
+                        let mut seeded = false;
+                        for _ in 0..40 {
+                            COMMAND_CHANNEL
+                                .send(command_task::ModemCommand::GetPdpAddress(
+                                    CgPaddrQuery::default(),
+                                ))
+                                .await;
+                            match communication::PDP_ADDRESS_RESULT.wait().await {
+                                Ok(true) => {
+                                    info!("PDP context active - seeding IpUp");
+                                    state_sender.send(state::MqttStackState::IpUp);
+                                    seeded = true;
+                                    break;
+                                }
+                                Ok(false) => {
+                                    info!("PDP context not active yet, polling...");
+                                }
+                                Err(e) => {
+                                    info!("PDP query not ready ({:?}), polling...", e);
+                                }
                             }
-                            Ok(false) => {
-                                info!("PDP context not active - waiting for CGEV edge");
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "PDP address query failed: {:?} - waiting for CGEV edge",
-                                    e
-                                );
-                            }
+                            Timer::after(Duration::from_secs(3)).await;
+                        }
+                        if !seeded {
+                            warn!(
+                                "PDP context not active after polling - waiting for CGEV edge"
+                            );
                         }
                         break;
                     }

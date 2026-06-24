@@ -25,3 +25,6 @@ run:
 
 provision:
     cargo run --release --bin provision
+
+tcptest:
+    cargo run --release --bin tcptest

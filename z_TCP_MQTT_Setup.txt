@@ -1,0 +1,277 @@
+# NB-IoT MQTT-over-TLS Setup Guide
+### iLabs Challenger+ RP2350 (ST87MXX modem) → self-hosted Mosquitto on GCP
+
+This guide documents the full, working setup for a TLS MQTT link between an
+ST87MXX NB-IoT modem and a self-hosted Mosquitto broker on a Google Cloud VM.
+It records only the path that works, plus the hard-won constraints that shaped it.
+
+---
+
+## 0. Why this setup (the binding constraints)
+
+These are non-negotiable properties of the ST87MXX that dictate everything else:
+
+1. **ECDSA only.** The modem's secure element rejects RSA certificates. The
+   entire chain must be ECDSA P-256. This rules out managed brokers that present
+   RSA chains (HiveMQ Cloud, EMQX Serverless), hence self-hosting Mosquitto.
+2. **No certificate-chain validation.** The modem verifies the server's cert
+   directly against a single stored CA root — it cannot walk a multi-level
+   chain. Use exactly one level: a CA root (stored on the modem) signing one
+   server leaf (presented by the broker).
+3. **Hostname verification against the connection target.** The modem checks the
+   server cert's identity against the address it dialled. It handles IP-type
+   SANs poorly, so **the server cert's CN must equal the IP address** you
+   connect to. This was the final blocker.
+4. **TLS needs a valid clock.** Cert validity is checked against the modem's
+   clock. The modem has no clock until the network provides one; manual
+   `AT+CCLK=` is rejected on the Soracom network. Enable network time
+   (`AT+CTZR=3`) and backdate cert `notBefore` to stay safely inside validity.
+
+---
+
+## Part A — Google Cloud VM + Mosquitto
+
+### A.1 Create the VM
+
+- Compute Engine → Create instance. Ubuntu (24.04 used here), `e2-micro`.
+- Free-tier note: only **us-central1** qualifies for an Always-Free e2-micro.
+  (This project happens to run in us-east1; choose us-central1 if cost matters.)
+
+### A.2 Reserve a static external IP (do this before issuing certs)
+
+The cert embeds the IP, so the IP must not change. Promote the ephemeral IP:
+
+- Console search → **IP addresses** → find the row with your instance's IP →
+  **Promote to static** → name it (e.g. `mqtt-static-ip`).
+
+Confirm on the VM:
+```bash
+curl -s ifconfig.me; echo      # note this <EXTERNAL_IP>, e.g. 34.148.211.3
+```
+
+### A.3 Open the firewall on 8883
+
+- Console search → **Firewall** → **Create firewall rule**:
+  - Name: `allow-mqtt-8883`
+  - Direction: Ingress, Targets: All instances
+  - Source IPv4 ranges: `0.0.0.0/0` (tighten to carrier range later)
+  - Protocols/ports: TCP `8883`
+
+### A.4 Install Mosquitto
+
+```bash
+sudo apt-get update
+sudo apt-get install -y mosquitto mosquitto-clients
+mosquitto -h | head -1          # confirm version (2.0.x)
+```
+
+---
+
+## Part B — Certificates (ECDSA, single-level, IP as CN, backdated)
+
+Run on the VM. `faketime` backdates `notBefore` so the modem's network clock is
+safely inside the validity window.
+
+```bash
+sudo apt-get install -y faketime
+mkdir -p ~/mqtt-certs && cd ~/mqtt-certs
+```
+
+### B.1 CA root (ECDSA P-256, CA:TRUE, keyCertSign, backdated)
+
+```bash
+cat > ca.cnf <<'EOF'
+[req]
+distinguished_name = dn
+x509_extensions = v3
+prompt = no
+[dn]
+CN = mqtt-ca
+[v3]
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+EOF
+
+openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+faketime '2026-06-20 12:00:00' openssl req -new -x509 -key ca.key \
+  -out ca.crt -days 3650 -sha256 -config ca.cnf -extensions v3
+```
+
+### B.2 Server leaf — **CN = the IP address** (critical), serverAuth, IP+DNS SAN
+
+```bash
+# Replace 34.148.211.3 with your <EXTERNAL_IP> in BOTH the subject and the SAN.
+cat > server.cnf <<'EOF'
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = IP:34.148.211.3, DNS:34.148.211.3
+EOF
+
+openssl ecparam -name prime256v1 -genkey -noout -out server.key
+openssl req -new -key server.key -out server.csr -subj "/CN=34.148.211.3"
+faketime '2026-06-20 12:00:00' openssl x509 -req -in server.csr \
+  -CA ca.crt -CAkey ca.key -CAcreateserial \
+  -out server.crt -days 3650 -sha256 -extfile server.cnf
+```
+
+### B.3 Verify the certs
+
+```bash
+openssl verify -CAfile ca.crt server.crt          # expect: server.crt: OK
+openssl x509 -in server.crt -noout -subject -issuer -dates \
+  -ext subjectAltName,extendedKeyUsage,basicConstraints
+```
+You want: `subject=CN=34.148.211.3`, `issuer=CN=mqtt-ca`, `notBefore` in the
+past, `TLS Web Server Authentication`, `IP Address:34.148.211.3`, `CA:FALSE`.
+
+---
+
+## Part C — Mosquitto configuration
+
+### C.1 Credentials (password file)
+
+```bash
+sudo mosquitto_passwd -c /etc/mosquitto/passwd <USERNAME>   # e.g. czarop; prompts for password
+sudo chown mosquitto:mosquitto /etc/mosquitto/passwd
+sudo chmod 600 /etc/mosquitto/passwd
+```
+
+### C.2 Install certs (mind AppArmor path)
+
+Mosquitto's AppArmor profile only whitelists certain cert directories. Use
+`/etc/mosquitto/certs/` — non-standard paths (e.g. a hyphenated
+`ca-certificates/`) are blocked silently and cause `Permission denied`.
+
+```bash
+sudo cp ca.crt server.crt server.key /etc/mosquitto/certs/
+sudo chown root:mosquitto /etc/mosquitto/certs/server.key
+sudo chmod 640 /etc/mosquitto/certs/server.key
+sudo chmod 644 /etc/mosquitto/certs/server.crt /etc/mosquitto/certs/ca.crt
+sudo chmod 755 /etc/mosquitto/certs/
+```
+
+### C.3 TLS listener config
+
+```bash
+sudo tee /etc/mosquitto/conf.d/tls.conf >/dev/null <<'EOF'
+per_listener_settings true
+listener 8883
+cafile /etc/mosquitto/certs/ca.crt
+certfile /etc/mosquitto/certs/server.crt
+keyfile /etc/mosquitto/certs/server.key
+require_certificate false
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+EOF
+```
+`require_certificate false` = one-way TLS (server auth only). The modem does
+**not** present a client cert, so no client key/cert provisioning is needed.
+
+### C.4 Restart and verify
+
+```bash
+sudo systemctl restart mosquitto
+sudo systemctl status mosquitto --no-pager      # expect: active (running)
+
+# If it fails, the real error is here or in the foreground run:
+sudo tail -n 20 /var/log/mosquitto/mosquitto.log
+sudo mosquitto -c /etc/mosquitto/mosquitto.conf   # Ctrl+C to stop
+```
+
+### C.5 Prove it works from an external client
+
+Test from a **laptop** (not the VM — localhost bypasses the firewall). With
+`mosquitto_pub`:
+```bash
+mosquitto_pub -h <EXTERNAL_IP> -p 8883 --cafile ca.crt \
+  -u <USERNAME> -P <PASSWORD> -t test/topic -m "hello tls" -d
+```
+Or MQTTX: Host `mqtts://<EXTERNAL_IP>`, Port 8883, SSL on, CA File = `ca.crt`
+(PEM), username/password set. A clean connect confirms the server side end-to-end.
+
+---
+
+## Part D — Get the CA onto the modem (DER)
+
+The modem stores the **CA root** in DER form (not the leaf).
+
+```bash
+openssl x509 -in /etc/mosquitto/certs/ca.crt -outform der -out ~/ca.der
+sha256sum ~/ca.der     # sanity vs the deployed CA
+```
+Download `~/ca.der` (use the full path `/home/<user>/ca.der` in the browser-SSH
+download box). Place it at the repo root so `include_bytes!("../../ca.der")`
+resolves in the provisioning binary.
+
+---
+
+## Part E — Modem provisioning (one-time, via `provision` binary)
+
+The provisioning binary sends these over UART1 and persists with `AT#RESET=1`:
+
+1. **Load CA into security profile 0, type 1 (CA root), binary mode.**
+   - `AT#TLSCERTADD=0,1` — profile **0** (must match the socket's
+     `security_profile_id`), type **1** (CA root cert).
+   - Use **binary mode** (send length, get `OK`, then raw DER bytes). Hex mode
+     fails for a full cert due to the long line length.
+   - Verify with `AT#TLSCERTLIST=0` → shows CN, validity dates. A parseable date
+     proves the full DER stored intact (no truncation).
+2. **`AT#SLEEPMODE=0`** — disable PSM sleep during development (takes effect
+   after the reboot below). Re-enable for battery operation later.
+3. **`AT+CGEREP=1`** — enable `+CGEV` packet-domain event reporting.
+4. **`AT#RESET=1`** — persist all of the above to NVM.
+
+Run: `cargo run --bin provision`. Re-run whenever the CA changes.
+
+> If you regenerate the **CA**, you must re-run provisioning with the new
+> `ca.der`. If you only regenerate the **server leaf** (same CA), no
+> re-provisioning is needed.
+
+---
+
+## Part F — Firmware bring-up essentials
+
+The pieces that make the TLS MQTT connect actually succeed:
+
+- **Socket security profile must be 0** (matching the CA's profile):
+  `SocketCreate { security_profile_id: Some(0), .. }`.
+- **Clock before connect.** With `AT+CGEREP`/`AT+CTZR=3` the network supplies
+  time on this SIM. TLS validation fails without a clock. (Production
+  alternative: set `AT+CCLK=` from the first GNSS fix.)
+- **Registration poll.** NB-IoT attach can take tens of seconds and the
+  `+CGEV: ME PDN ACT 5` edge often fires before the task subscribes. Poll
+  `AT+CGPADDR=5` until it returns an address, then proceed (seed `IpUp`).
+- **Pre-create socket close.** The modem holds its single TCP socket across an
+  RP2350 reflash. Send `AT#SOCKETCLOSE=5,0` (error benign) before
+  `AT#SOCKETCREATE`, or creation fails with `+CME ERROR: 2159` (max sockets).
+- **Connect sequence (MQTT):** `SOCKETCREATE` → `MQTTCFG` → `MQTTCONNECT`.
+  Do **not** call `TCPCONNECT` for MQTT; the MQTT layer handles the TCP/TLS
+  connect internally.
+
+---
+
+## Appendix — Error codes seen and their meaning
+
+| Code / symptom | Meaning | Fix |
+|---|---|---|
+| `+CME ERROR: 2104` | invalid socket id | socket not open / profile mismatch — create succeeded on profile 0 |
+| `+CME ERROR: 2159` | max sockets reached | pre-close `AT#SOCKETCLOSE=5,0` before create |
+| `+CME ERROR: 2161` | invalid security profile id | profile must exist and match the stored cert (0) |
+| `+CME ERROR: 2214` | MQTT connection failed | usually TLS handshake failing underneath |
+| Broker log: `ssl/tls alert bad certificate` | modem rejected server cert | cert CN ≠ IP, missing serverAuth, chain >1 level, or clock outside validity |
+| `AT+CCLK?` → `ERROR` | no clock | enable `AT+CTZR=3` (network time) or set from GNSS |
+| Mosquitto won't start, `status=13` | permission denied | fix `passwd`/key ownership; `chmod 755` cert dir (AppArmor) |
+
+## Appendix — Quick verification commands
+
+```bash
+# What the broker actually serves (extensions + fingerprint):
+openssl s_client -connect <EXTERNAL_IP>:8883 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -dates -fingerprint -sha256
+
+# Must match the CA's relationship and the DER on the modem:
+openssl verify -CAfile ca.crt server.crt
+openssl x509 -in ca.crt -outform der | sha256sum   # vs sha256sum ~/ca.der
+```
