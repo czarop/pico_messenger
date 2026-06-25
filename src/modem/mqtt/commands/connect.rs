@@ -40,7 +40,7 @@ impl MqttConnectStub {
 }
 
 #[derive(Clone, AtatCmd)]
-#[at_cmd("#MQTTCONNECT", OkResponse, timeout_ms = 20000)]
+#[at_cmd("#MQTTCONNECT", OkResponse, timeout_ms = 70000)]
 pub struct MqttConnect {
     context_id: u8,             // Always 5 (default PDP context)
     socket_id: u8,              // Returned from SocketCreate

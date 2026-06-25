@@ -6,10 +6,12 @@ use heapless::String;
 use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
 use crate::modem::{command_task, communication::{self, COMMAND_CHANNEL, MQTT_COMMAND, MQTT_STATE, SUBSCRIBE_RESULT, UNSUBSCRIBE_RESULT}, mqtt::{
         commands::{
+            clock::CclkQuery,
             config::MqttConfig,
             connect::{MqttConnect, MqttConnectStub, MqttDisconnect},
             pdn::CgPaddrQuery,
-            socket::{SocketClose, SocketCreate},
+            reset::ModemReset,
+            socket::{SocketClose, SocketCreate, SocketQuery},
             subscribe::{MqttSubscribe, MqttUnsubscribe},
         },
         state,
@@ -40,6 +42,7 @@ pub async fn network_task(
     let incoming_commands = &MQTT_COMMAND;
     let mut try_disconnect = false;
     let mut socket_id = 0;
+    let mut connect_failures: u8 = 0;
     'outer: loop {
         if !matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_disconnect {
             defmt::info!("disconnecting");
@@ -75,30 +78,67 @@ pub async fn network_task(
         }
 
         if let Some(state::MqttStackState::IpUp) = state_watcher.try_get() {
-            // Only one TCP socket exists (id 0). It can be left occupied by a previous
-            // session or the modem's own bring-up, causing SOCKETCREATE to fail with
-            // +CME ERROR: 2159 (max sockets reached). Close it first; the error is
-            // benign when no socket is open. The Ok/Err result also tells us whether a
-            // stale socket actually existed.
-            defmt::info!("closing any stale socket before create");
-            for i in 0..=10 {
-                COMMAND_CHANNEL
-                    .send(command_task::ModemCommand::SocketClose(SocketClose {
-                        context_id: socket_info.context_id(),
-                        socket_id: 0,
-                    }))
-                    .await;
-                match communication::NETWORK_RESULT.wait().await {
-                    Ok(()) => {info!("closed a stale socket {}", 0);
-                    break;
-                },
-                    Err(e) => {
-                        info!("no stale socket to close (expected): {:?}", e);
-                        embassy_time::Timer::after(Duration::from_secs(1)).await;
-                    },
+            // A previous session's TCP socket can still occupy the modem's single
+            // TCP slot after an RP2350 reflash, causing SOCKETCREATE to fail with
+            // +CME ERROR: 2159 (max sockets reached). Query the modem for the
+            // sockets it actually holds open (by real ID) and close each one. If
+            // a listed socket then refuses to close, it is wedged and only a
+            // modem reset clears it (handled below).
+            defmt::info!("querying modem for open sockets before create");
+            COMMAND_CHANNEL
+                .send(command_task::ModemCommand::SocketQuery(SocketQuery {}))
+                .await;
+
+            // A socket the modem lists as open but then refuses to close
+            // (+CME ERROR: 2104) is wedged: it keeps occupying the single TCP
+            // slot (create fails with +CME ERROR: 2159) and no host-side
+            // SOCKETCLOSE can clear it. This survives an RP2350 reflash; only a
+            // modem reboot clears it. Track whether we hit that so we can reset.
+            let mut needs_modem_reset = false;
+            match communication::SOCKET_QUERY_RESULT.wait().await {
+                Ok(open) => {
+                    if open.ids.is_empty() {
+                        info!("no sockets open - proceeding to create");
+                    } else {
+                        for id in open.ids.iter() {
+                            info!("closing stale socket id={}", id);
+                            COMMAND_CHANNEL
+                                .send(command_task::ModemCommand::SocketClose(SocketClose {
+                                    context_id: socket_info.context_id(),
+                                    socket_id: *id,
+                                }))
+                                .await;
+                            match communication::NETWORK_RESULT.wait().await {
+                                Ok(()) => info!("closed stale socket id={}", id),
+                                Err(e) => {
+                                    warn!(
+                                        "socket id={} listed open but won't close ({:?}) - modem reset required",
+                                        id, e
+                                    );
+                                    needs_modem_reset = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("socket query failed ({:?}) - proceeding to create", e);
                 }
             }
-            
+
+            if needs_modem_reset {
+                // Reboot the modem to clear the wedged socket. AT#RESET=0 keeps
+                // provisioned config. The module may reboot before replying, so
+                // ignore the command result and rely on the #REBOOT_HOST URC
+                // (handled in the monitor loop) to re-drive bring-up.
+                warn!("resetting modem (AT#RESET=0) to clear wedged socket");
+                COMMAND_CHANNEL
+                    .send(command_task::ModemCommand::ModemReset(ModemReset::default()))
+                    .await;
+                let _ = communication::NETWORK_RESULT.wait().await;
+                state_sender.send(state::MqttStackState::Down);
+                continue 'outer;
+            }
 
             defmt::info!("creating socket");
             // bring up the mqtt stack
@@ -156,31 +196,73 @@ pub async fn network_task(
                 }
             }
 
-            let mut retries = 0;
-            let mqtt_connection = MqttConnect::from_stub(socket_id, mqtt_connection.clone());
-            loop {
-                defmt::info!("connecting mqtt");
+            // TLS needs the modem RTC, which only syncs after EMM INFORMATION
+            // (post-registration). After a reboot we can reach connect before the
+            // clock lands, making the handshake time out (surfacing as MQTT
+            // +CME ERROR: 2214). Poll AT+CCLK? and gate connect on a sane date.
+            // (Whether the modem returns a stale default date or errors before
+            // sync, both keep us polling.)
+            defmt::info!("waiting for modem clock before connect");
+            let mut clock_ready = false;
+            for _ in 0..30 {
                 COMMAND_CHANNEL
-                    .send(command_task::ModemCommand::MqttConnect(
-                        mqtt_connection.clone(),
-                    ))
+                    .send(command_task::ModemCommand::ClockQuery(CclkQuery {}))
                     .await;
-
-                match communication::NETWORK_RESULT.wait().await {
-                    Ok(()) => {
-                        info!("Mqtt connected");
-                        state_sender.send(state::MqttStackState::MqttReady);
+                match communication::CLOCK_RESULT.wait().await {
+                    Ok(c) if c.ready => {
+                        info!("modem clock ready (year={})", c.year.unwrap_or(0));
+                        clock_ready = true;
                         break;
                     }
-                    Err(e) => {
-                        error!("Failed to connect MQTT stack: {:?}", e);
-                        retries += 1;
-                        if retries > 9 {
-                            error!("Failed to connect MQTT stack 10 times, Aborting");
-                            state_sender.send(state::MqttStackState::Down);
-                            continue 'outer;
-                        }
+                    Ok(c) => info!("clock not ready yet (year={:?}), polling...", c.year),
+                    Err(e) => info!("clock query not ready ({:?}), polling...", e),
+                }
+                Timer::after(Duration::from_secs(1)).await;
+            }
+            if !clock_ready {
+                warn!("modem clock not ready after polling - attempting connect anyway");
+            }
+
+            let mqtt_connection = MqttConnect::from_stub(socket_id, mqtt_connection.clone());
+            defmt::info!("connecting mqtt");
+            COMMAND_CHANNEL
+                .send(command_task::ModemCommand::MqttConnect(
+                    mqtt_connection.clone(),
+                ))
+                .await;
+
+            match communication::NETWORK_RESULT.wait().await {
+                Ok(()) => {
+                    info!("Mqtt connected");
+                    connect_failures = 0;
+                    state_sender.send(state::MqttStackState::MqttReady);
+                }
+                Err(e) => {
+                    // A failed MQTTCONNECT tears the socket down (subsequent ops
+                    // return +CME ERROR: 2104, invalid socket id), so retrying
+                    // connect on the same socket is futile. Rebuild from socket
+                    // creation instead. After repeated failures, escalate to a
+                    // modem reset for a clean slate.
+                    connect_failures = connect_failures.saturating_add(1);
+                    error!(
+                        "Failed to connect MQTT stack ({:?}), failure {} - rebuilding socket",
+                        e, connect_failures
+                    );
+                    if connect_failures >= 5 {
+                        warn!("MQTT connect failed {} times - resetting modem", connect_failures);
+                        connect_failures = 0;
+                        COMMAND_CHANNEL
+                            .send(command_task::ModemCommand::ModemReset(ModemReset::default()))
+                            .await;
+                        let _ = communication::NETWORK_RESULT.wait().await;
+                        state_sender.send(state::MqttStackState::Down);
+                    } else {
+                        // Re-enter socket creation; the stale-socket query there
+                        // will clean up the dead socket before recreating.
+                        Timer::after(Duration::from_secs(2)).await;
+                        state_sender.send(state::MqttStackState::IpUp);
                     }
+                    continue 'outer;
                 }
             }
         }

@@ -1,5 +1,7 @@
 use crate::modem::error::ModemError;
 use crate::modem::gnss_task::GnssCommand;
+use crate::modem::mqtt::commands::clock::ClockReady;
+use crate::modem::mqtt::commands::socket::OpenSockets;
 use crate::modem::network_task::MqttCommand;
 use crate::modem::mqtt::state::MqttStackState;
 use crate::{modem::gnss::state::GNSSState, modem::command_task::ModemCommand};
@@ -16,6 +18,8 @@ pub static GNSS_STATE: Watch<CriticalSectionRawMutex, GNSSState, 2> = Watch::new
 // Result signals back from modem_task
 pub static NETWORK_RESULT: Signal<CriticalSectionRawMutex, Result<(), ModemError>> = Signal::new();
 pub static SOCKET_RESULT: Signal<CriticalSectionRawMutex, Result<u8, ModemError>> = Signal::new();
+pub static SOCKET_QUERY_RESULT: Signal<CriticalSectionRawMutex, Result<OpenSockets, ModemError>> = Signal::new();
+pub static CLOCK_RESULT: Signal<CriticalSectionRawMutex, Result<ClockReady, ModemError>> = Signal::new();
 pub static GNSS_RESULT: Signal<CriticalSectionRawMutex, Result<(), ModemError>> = Signal::new();
 pub static PUBLISH_RESULT: Signal<CriticalSectionRawMutex, Result<(), ModemError>> = Signal::new();
 pub static SUBSCRIBE_RESULT: Signal<CriticalSectionRawMutex, Result<heapless::String<50>, ModemError>> = Signal::new();

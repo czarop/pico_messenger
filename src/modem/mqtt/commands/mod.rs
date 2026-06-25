@@ -6,6 +6,8 @@ pub mod publish;
 pub mod socket;
 pub mod subscribe;
 pub mod pdn;
+pub mod reset;
+pub mod clock;
 
 #[derive(Clone, AtatResp)]
 pub struct OkResponse;
