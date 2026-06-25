@@ -81,16 +81,24 @@ pub async fn network_task(
             // benign when no socket is open. The Ok/Err result also tells us whether a
             // stale socket actually existed.
             defmt::info!("closing any stale socket before create");
-            COMMAND_CHANNEL
-                .send(command_task::ModemCommand::SocketClose(SocketClose {
-                    context_id: socket_info.context_id(),
-                    socket_id: 0,
-                }))
-                .await;
-            match communication::NETWORK_RESULT.wait().await {
-                Ok(()) => info!("closed a stale socket (id 0)"),
-                Err(e) => info!("no stale socket to close (expected): {:?}", e),
+            for i in 0..=10 {
+                COMMAND_CHANNEL
+                    .send(command_task::ModemCommand::SocketClose(SocketClose {
+                        context_id: socket_info.context_id(),
+                        socket_id: 0,
+                    }))
+                    .await;
+                match communication::NETWORK_RESULT.wait().await {
+                    Ok(()) => {info!("closed a stale socket {}", 0);
+                    break;
+                },
+                    Err(e) => {
+                        info!("no stale socket to close (expected): {:?}", e);
+                        embassy_time::Timer::after(Duration::from_secs(1)).await;
+                    },
+                }
             }
+            
 
             defmt::info!("creating socket");
             // bring up the mqtt stack
