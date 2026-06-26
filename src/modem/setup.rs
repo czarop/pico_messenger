@@ -88,7 +88,7 @@ pub fn initiate_modem(
     spawner.spawn(command_task(client).unwrap());
 
     let urc_subscription = URC_CHANNEL.subscribe().expect("could not subscribe to urc channel");
-    let socket = SocketCreate::new(10, 10);
+    let socket = SocketCreate::new(60, 60);
     let mqtt_config = MqttConfig::default();
     let broker_address = heapless::String::try_from(dotenv!("MQTT_ADDRESS")).unwrap();
     let broker_port: u16 = dotenv!("MQTT_PORT").parse().unwrap();

@@ -23,8 +23,8 @@ impl Default for SocketCreate {
             ip_version: 0, // IPv4
             socket_type: String::try_from("TCP").unwrap(),
             local_port: 0, // random port assigned by stack
-            send_timeout: 10,
-            receive_timeout: 10,
+            send_timeout: 70,
+            receive_timeout: 70,
             frame_received_urc: 0, // disabled, MQTT handles its own URCs
             security_profile_id: Some(0)
         }

@@ -25,6 +25,21 @@ pub enum MqttCommand {
     Unsubscribe(String<50>),
 }
 
+/// True when a `+CEREG` URC body indicates the radio is registered (stat 1 =
+/// registered home, 5 = registered roaming). The body may or may not include the
+/// `+CEREG:` prefix depending on how it was captured; in the URC form the status
+/// is the first field. Tolerates the surrounding quotes/whitespace.
+fn cereg_registered(body: &str) -> bool {
+    let s = body.trim();
+    let s = s.strip_prefix("+CEREG:").map(|r| r.trim()).unwrap_or(s);
+    matches!(
+        s.split(',')
+            .next()
+            .and_then(|f| f.trim().trim_matches('"').parse::<u8>().ok()),
+        Some(1) | Some(5)
+    )
+}
+
 #[embassy_executor::task]
 pub async fn network_task(
     mut sub: atat::UrcSubscription<'static, ModemUrc, URC_CAPACITY, URC_SUBSCRIBERS>,
@@ -66,13 +81,13 @@ pub async fn network_task(
                 .await;
             let _ = communication::NETWORK_RESULT.wait().await;
 
-            COMMAND_CHANNEL
-                .send(command_task::ModemCommand::SocketClose(SocketClose {
-                    context_id: socket_info.context_id(),
-                    socket_id,
-                }))
-                .await;
-            let _ = communication::NETWORK_RESULT.wait().await;
+            // COMMAND_CHANNEL
+            //     .send(command_task::ModemCommand::SocketClose(SocketClose {
+            //         context_id: socket_info.context_id(),
+            //         socket_id,
+            //     }))
+            //     .await;
+            // let _ = communication::NETWORK_RESULT.wait().await;
 
             state_sender.send(state::MqttStackState::Down);
         }
@@ -257,10 +272,14 @@ pub async fn network_task(
                         let _ = communication::NETWORK_RESULT.wait().await;
                         state_sender.send(state::MqttStackState::Down);
                     } else {
-                        // Re-enter socket creation; the stale-socket query there
-                        // will clean up the dead socket before recreating.
-                        Timer::after(Duration::from_secs(2)).await;
-                        state_sender.send(state::MqttStackState::IpUp);
+                        // The connection most likely dropped mid-handshake — a
+                        // registration loss (+CEREG stat 2, #IPCFG ip_status 0)
+                        // leaves the network down, so immediately rebuilding just
+                        // hammers SOCKETCREATE with +CME ERROR: 2106 (network
+                        // down). Drop to Down and let the monitor loop re-drive
+                        // when the radio re-registers (+CEREG stat 1/5 or
+                        // +CGEV ME PDN ACT 5).
+                        state_sender.send(state::MqttStackState::Down);
                     }
                     continue 'outer;
                 }
@@ -397,6 +416,23 @@ pub async fn network_task(
                             subscribed_topics = heapless::Vec::new();
                             state_sender.send(state::MqttStackState::Down);
                             break;
+                    }
+                    ModemUrc::Cereg(body) => {
+                        // Network registration changed. Only act on it as a
+                        // recovery signal: if we're sitting in Down (e.g. after a
+                        // connect dropped mid-handshake) and the radio has
+                        // re-registered, re-drive bring-up. During healthy
+                        // operation a routine +CEREG must not disturb the stack.
+                        if cereg_registered(body.as_str())
+                            && matches!(
+                                state_watcher.try_get(),
+                                Some(state::MqttStackState::Down)
+                            )
+                        {
+                            info!("network re-registered - rebuilding mqtt stack");
+                            state_sender.send(state::MqttStackState::IpUp);
+                            break;
+                        }
                     }
                     _ => {}
                 },

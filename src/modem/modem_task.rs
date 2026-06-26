@@ -95,6 +95,11 @@ pub async fn modem_task(
                 match PUBLISH_RESULT.wait().await {
                     Ok(_) => {
                         info!("Published successfully");
+                        // Tear down the session (unsubscribe -> disconnect ->
+                        // close socket) before sleeping; the next loop re-Starts
+                        // and rebuilds against the still-active PDP context.
+                        communication::MQTT_COMMAND
+                            .signal(crate::modem::network_task::MqttCommand::Stop);
                         embassy_time::Timer::after(Duration::from_secs(gnss_interval as u64)).await;
                     },
                     Err(e) => {
@@ -110,6 +115,9 @@ pub async fn modem_task(
                 match PUBLISH_RESULT.wait().await {
                     Ok(_) => {
                         info!("Published successfully");
+                        // Tear down the session before sleeping (see above).
+                        communication::MQTT_COMMAND
+                            .signal(crate::modem::network_task::MqttCommand::Stop);
                         embassy_time::Timer::after(Duration::from_secs(gnss_interval as u64)).await;
                     },
                     Err(e) => {
