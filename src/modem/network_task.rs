@@ -392,9 +392,22 @@ pub async fn network_task(
                             break;
                         }
                         ip_stack::CgevEvent::MePdnAct(5) => {
-                            state_sender.send(state::MqttStackState::IpUp);
-                            info!("Network IPuP");
-                            break;
+                            // Only treat a context (re)activation as a trigger to
+                            // rebuild when we're actually Down. A genuine
+                            // mid-session re-attach is always preceded by a detach
+                            // (handled above) that drops us to Down, so this still
+                            // catches real recovery. Without the guard, a stale
+                            // ME PDN ACT 5 buffered during the initial cold attach
+                            // gets drained right after a successful connect and
+                            // tears the live session down.
+                            if matches!(
+                                state_watcher.try_get(),
+                                Some(state::MqttStackState::Down)
+                            ) {
+                                state_sender.send(state::MqttStackState::IpUp);
+                                info!("Network IPuP");
+                                break;
+                            }
                         }
                         _ => {}
                     },
@@ -438,6 +451,24 @@ pub async fn network_task(
                 },
                 Either::Second(cmd) => match cmd {
                     MqttCommand::Start => {
+                        // Ignore a Start unless we're actually Down. A spontaneous
+                        // +CGEV ME PDN ACT 5 attach can drive the stack up before
+                        // modem_task's orchestrated Start arrives; acting on the
+                        // redundant Start then launches a *second* bring-up that
+                        // finds the first's live socket via SOCKETCREATE? and
+                        // mistakes it for a wedged one (SOCKETCLOSE -> 2104 ->
+                        // modem reset). modem_task only waits on MQTT_STATE reaching
+                        // MqttReady, which the in-flight bring-up already provides,
+                        // so dropping the duplicate Start is safe. After a normal
+                        // teardown the state is Down, so the next cycle's Start is
+                        // honoured as usual.
+                        if !matches!(
+                            state_watcher.try_get(),
+                            Some(state::MqttStackState::Down)
+                        ) {
+                            info!("Start ignored - bring-up already in progress");
+                            break;
+                        }
                         try_disconnect = false;
                         warn!("Network start called");
                         // The modem auto-activates context 5 once NB-IoT registration
