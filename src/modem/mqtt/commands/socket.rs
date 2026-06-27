@@ -56,7 +56,7 @@ pub struct SocketCreateResponse {
 }
 
 #[derive(Clone, AtatCmd)]
-#[at_cmd("#SOCKETCLOSE", OkResponse, timeout_ms = 60000)]
+#[at_cmd("#SOCKETCLOSE", OkResponse, timeout_ms = 10000)]
 pub struct SocketClose {
     pub context_id: u8,
     pub socket_id: u8,
