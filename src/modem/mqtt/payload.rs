@@ -1,49 +1,3 @@
-// use heapless::String;
-
-// use crate::modem::gnss::urc::fix::GnssLocation;
-
-// #[repr(C)]
-// #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-// pub struct LocationPayload {
-//     pub lat: i32,            // degrees × 1_000_000
-//     pub lon: i32,            // degrees × 1_000_000
-//     pub week_number: u16,      
-//     pub time_of_week: u32,
-//     pub altitude: i16,       // metres
-//     pub hdop: u8,            // hdop × 10
-//     pub flags: u8,           // bit 0 = is_moving
-// }
-
-// impl LocationPayload {
-//     pub fn to_base64(&self) -> String<50> {
-//         use base64ct::{Base64, Encoding};
-
-//         let bytes: &[u8] = unsafe {
-//             core::slice::from_raw_parts(
-//                 self as *const LocationPayload as *const u8,
-//                 core::mem::size_of::<LocationPayload>(),
-//             )
-//         };
-
-//         let mut buf = [0u8; 50];
-//         let encoded = Base64::encode(bytes, &mut buf).unwrap();
-//         String::try_from(encoded).unwrap()
-//     }
-
-//     pub fn from_gnss(loc: GnssLocation, is_moving: bool) -> Self {
-//         Self {
-//             lat: (loc.position.latitude * 1_000_000.0) as i32,
-//             lon: (loc.position.longitude * 1_000_000.0) as i32,
-//             week_number: loc.position.week_number,
-//             time_of_week: loc.position.time_of_week,
-//             altitude: loc.position.altitude as i16,
-//             hdop: (loc.accuracy.hdop * 10.0).clamp(0.0, 255.0) as u8,
-//             flags: if is_moving { 1 } else { 0 },
-//         }
-//     }
-// }
-
-
 //! MQTT location payload.
 //!
 //! `AT#MQTTPUB` caps the `<message>` field at 50 UTF-8 chars (verified against
@@ -79,7 +33,6 @@
 //! bit means "no data", which is distinct from a zero value.
 
 use heapless::String;
-use micromath::F32Ext;
 
 use crate::modem::gnss::urc::fix::GnssLocation;
 
@@ -136,10 +89,10 @@ impl LocationPayload {
         is_moving: bool,
     ) -> Self {
         // vdop = sqrt(pdop^2 - hdop^2), guarded against pdop < hdop (which
-        // would be a degenerate report). micromath::F32Ext::sqrt for no_std.
+        // would be a degenerate report). libm::sqrtf for accurate no_std math.
         let p = loc.accuracy.pdop;
         let h = loc.accuracy.hdop;
-        let vdop_f = if p >= h { (p * p - h * h).sqrt() } else { 0.0 };
+        let vdop_f = if p >= h { libm::sqrtf(p * p - h * h) } else { 0.0 };
 
         let mut flags: u8 = 0;
         if is_moving {

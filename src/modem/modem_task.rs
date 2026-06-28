@@ -1,10 +1,10 @@
 use defmt::{error, info, warn};
-use embassy_futures::{join::join, select::select};
+use embassy_futures::join::join;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Receiver};
 use embassy_time::{Duration, Timer, with_timeout};
 
 use crate::modem::{
-    UpdateIntervalSecs, command_task::ModemCommand, communication::{self, COMMAND_CHANNEL, PUBLISH_RESULT}, gnss::{commands::init::GnssInit, speed::FixPair, state::GNSSState, urc::fix::GnssLocation}, gnss_task::GnssCommand, mqtt::{
+    UpdateIntervalSecs, command_task::ModemCommand, communication::{self, COMMAND_CHANNEL, GNSS_COMMAND, PUBLISH_RESULT}, gnss::{commands::init::GnssInit, speed::FixPair, state::GNSSState, urc::fix::GnssLocation}, gnss_task::GnssCommand, mqtt::{
         commands::{MqttQos, publish::MqttPublish, subscribe::MqttSubscribe}, payload::LocationPayload, state::MqttStackState
     }, network_task::MqttCommand
 };
@@ -12,6 +12,12 @@ use crate::modem::{
 
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
 const SUBSCRIBE_RETRY: Duration = Duration::from_secs(1);
+/// Seconds between the two GNSS fixes used to compute speed (the `#GNSSFIX`
+/// `<period>`). Short, decoupled from the publish cadence. ~3s gives a usable
+/// vehicle-speed baseline; lengthen toward 5s if pedestrian speed matters.
+const GNSS_FIX_PERIOD_SECS: UpdateIntervalSecs = 3;
+const GNSS_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
 
 /// Await the next genuine GNSS `Fix`, skipping transient states
 /// (`Acquiring`, `Initialising`, ...). Caller must bound this with a timeout.
@@ -67,6 +73,29 @@ async fn ready_and_subscribe(
     }
 }
 
+/// Stop GNSS and wait for it to confirm `Off` before sleeping, so the receiver
+/// isn't drawing current through the sleep window. Bounded by a timeout: a
+/// failed/slow deinit (real) or an unresponsive source can't hang the cycle.
+/// No-op if already `Off` (gnss_task ignores a `Stop` in that state and would
+/// never re-emit `Off`, so waiting on `changed()` would block forever).
+async fn stop_gnss(rx: &mut Receiver<'_, CriticalSectionRawMutex, GNSSState, 2>) {
+    if matches!(rx.try_get(), Some(GNSSState::Off)) {
+        return;
+    }
+    communication::GNSS_COMMAND.signal(GnssCommand::Stop);
+    let confirmed = with_timeout(GNSS_STOP_TIMEOUT, async {
+        loop {
+            if let GNSSState::Off = rx.changed().await {
+                break;
+            }
+        }
+    })
+    .await;
+    if confirmed.is_err() {
+        warn!("GNSS did not confirm Off before timeout — sleeping anyway");
+    }
+}
+
 #[embassy_executor::task]
 pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless::String<50>) -> ! {
     info!("modem task spawned");
@@ -82,12 +111,10 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
  
         if matches!(gnss_watcher.try_get(), Some(GNSSState::Off) | None) {
             // NOTE: the fix burst period (seconds between the two fixes) is the
-            // 2nd arg. It must be a SHORT value (~3s), NOT `gnss_interval` (the
-            // 15-min publish cadence), or the two fixes are 15 min apart and the
-            // computed speed is meaningless. Set the short period here.
+            // 2nd arg. It must be a SHORT value (~3s)
             communication::GNSS_COMMAND.signal(GnssCommand::Start(
                 GnssInit::default(),
-                Some(gnss_interval), // TODO: replace with short burst period (e.g. 3)
+                Some(GNSS_FIX_PERIOD_SECS),
             ));
         }
  
@@ -105,6 +132,13 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
  
         match outcome {
             Ok((fix_pair, ())) => {
+                GNSS_COMMAND.signal(GnssCommand::Stop);
+                loop {
+                    if let GNSSState::Off = gnss_watcher.changed().await {
+                        break;
+                    }
+                }
+                
                 // Both ready: build the payload from the fix pair and publish.
                 let speed = fix_pair.speed_mps();
                 // is_moving: a measured non-zero speed means moving; Some(0.0) is
@@ -113,24 +147,28 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
                 warn!("heading placeholder (None) — wire BNO085 next");
  
                 let payload = LocationPayload::from_gnss(fix_pair.end, speed, None, is_moving);
-                let encoded = payload.to_base64();
- 
-                let publish = MqttPublish::new(mqtt_topic.clone(), encoded);
-                COMMAND_CHANNEL.send(ModemCommand::MqttPublish(publish)).await;
- 
-                match PUBLISH_RESULT.wait().await {
-                    Ok(_) => {
-                        info!("Published successfully");
-                        // Tear down the session (unsub -> disconnect -> close
-                        // socket) before sleeping; next loop re-Starts against
-                        // the still-active PDP context.
-                        communication::MQTT_COMMAND.signal(MqttCommand::Stop);
+                
+                for _ in 1..10 {
+                    let publish = MqttPublish::new(mqtt_topic.clone(), payload.to_base64());
+                    COMMAND_CHANNEL.send(ModemCommand::MqttPublish(publish)).await;
+    
+                    match PUBLISH_RESULT.wait().await {
+                        Ok(_) => {
+                            info!("Published successfully");
+                            // Tear down the session (unsub -> disconnect -> close
+                            // socket) before sleeping; next loop re-Starts against
+                            // the still-active PDP context.
+                            communication::MQTT_COMMAND.signal(MqttCommand::Stop);
+                            break;
+                        }
+                        Err(e) => {
+                            error!("Publish failed: {:?}", e);
+                            warn!("implement retry loop");
+                        }
                     }
-                    Err(e) => {
-                        error!("Publish failed: {:?}", e);
-                        warn!("implement retry loop");
-                    }
+
                 }
+                
             }
             Err(_) => {
                 // Timed out: one or both of GNSS / MQTT did not become ready.
@@ -147,9 +185,12 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
                 communication::MQTT_COMMAND.signal(MqttCommand::Stop);
             }
         }
+
+        // Stop GNSS before sleeping so the receiver isn't draining current
+        // through the sleep window. Covers both match arms — GNSS is started at
+        // the top of the loop regardless of how the cycle ended.
+        stop_gnss(&mut gnss_watcher).await;
  
-        // TODO(power): GNSS is still running at the burst period and will keep
-        // emitting fixes through the sleep window. Stop it here before sleeping.
         Timer::after(Duration::from_secs(gnss_interval as u64)).await;
     }
 }

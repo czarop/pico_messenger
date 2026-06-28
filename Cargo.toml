@@ -94,6 +94,7 @@ micromath = "2"
 base64ct = "1"
 bmp390 = "0.4.3"
 uom = {version = "0.36", default-features = false}
+libm = "0.2.16"
 
 [patch.crates-io]
 embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "24da56d" }
@@ -131,3 +132,7 @@ atat = {git = "https://github.com/FactbirdHQ/atat", rev = "edceb1a"}
 
 [target.'cfg( target_arch = "arm" )'.dependencies]
 panic-probe = { version = "1", features = ["print-defmt"] }
+
+[features] 
+mock_gnss = []
+mock_modem = []

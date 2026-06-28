@@ -18,10 +18,13 @@ reboot:
     picotool reboot
 
 
-runc:
-    DEV_BOARD=challenger cargo run --release --bin pico_messenger
+runcm:
+    DEV_BOARD=challenger cargo run --release --bin pico_messenger --features mock_gnss
 run:
     cargo run --release --bin pico_messenger
+
+runm:
+    cargo run --release --bin pico_messenger --features mock_modem,mock_gnss
 
 provision:
     cargo run --release --bin provision

@@ -12,14 +12,12 @@
 //! equirectangular (flat-earth) approximation, which is exact to <0.001 % over a
 //! few-second baseline and cheaper than haversine.
 
-use micromath::F32Ext;
-
 use crate::modem::gnss::urc::fix::{GnssLocation, GnssPosition};
 
 /// Mean Earth radius, metres.
-const EARTH_RADIUS_M: f32 = 6_371_000.0;
-/// Degrees -> radians (core has no no_std `f32::to_radians`).
-const DEG_TO_RAD: f32 = core::f32::consts::PI / 180.0;
+const EARTH_RADIUS_M: f64 = 6_371_000.0;
+/// Degrees -> radians (computed in f64; no_std `f64::to_radians` is std-only).
+const DEG_TO_RAD: f64 = core::f64::consts::PI / 180.0;
 /// Milliseconds per GPS week (for rollover-safe Δt).
 const MS_PER_WEEK: i64 = 604_800_000;
 
@@ -77,14 +75,14 @@ fn gps_delta_ms(start: &GnssPosition, end: &GnssPosition) -> i64 {
 }
 
 /// Ground distance between two positions, metres, via the equirectangular
-/// approximation. Deltas are formed in f64 (they are tiny) before the cast to
-/// f32, preserving precision.
+/// approximation. Computed entirely in f64 with `libm` trig (accurate, runs
+/// once per publish so precision beats speed), cast to f32 only at the end.
 pub fn equirectangular_m(a: &GnssPosition, b: &GnssPosition) -> f32 {
-    let dlat = ((b.latitude - a.latitude) as f32) * DEG_TO_RAD;
-    let dlon = ((b.longitude - a.longitude) as f32) * DEG_TO_RAD;
-    let mean_lat = (((a.latitude + b.latitude) * 0.5) as f32) * DEG_TO_RAD;
+    let dlat = (b.latitude - a.latitude) * DEG_TO_RAD;
+    let dlon = (b.longitude - a.longitude) * DEG_TO_RAD;
+    let mean_lat = ((a.latitude + b.latitude) * 0.5) * DEG_TO_RAD;
 
-    let x = dlon * mean_lat.cos();
+    let x = dlon * libm::cos(mean_lat);
     let y = dlat;
-    (x * x + y * y).sqrt() * EARTH_RADIUS_M
+    (libm::sqrt(x * x + y * y) * EARTH_RADIUS_M) as f32
 }

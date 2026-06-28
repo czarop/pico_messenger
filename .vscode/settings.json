@@ -1,8 +1,16 @@
 {
   "rust-analyzer.cargo.target": "thumbv8m.main-none-eabihf",
-  "rust-analyzer.check.allTargets": false,
+  "rust-analyzer.check.allTargets": true,
   "editor.formatOnSave": true,
   "files.exclude": {
     ".pico-rs": false
-  }
+  },
+  "rust-analyzer.cargo.features": [
+    "mock_gnss",
+    "mock_modem"
+  ],
+  "rust-analyzer.check.features": [
+    "mock_gnss",
+    "mock_modem"
+  ]
 }

@@ -23,4 +23,12 @@ impl MqttPublish {
             retain_flag: MqttRetainFlag::NotRetained,
         }
     }
+
+    pub fn topic(&self) -> &str {
+        &self.topic
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }

@@ -108,11 +108,39 @@ pub fn initiate_modem(
 
     let urc_subscription = URC_CHANNEL.subscribe().expect("could not subscribe to urc channel");
 
+    #[cfg(not(feature = "mock_gnss"))]
     spawner.spawn(crate::modem::gnss_task::gnss_task( urc_subscription, gnss_bias).unwrap());
+
+    #[cfg(feature = "mock_gnss")]
+    {
+        // Real GNSS replaced by the mock; the URC subscription and bias pin are
+        // unused in this build.
+        let _ = urc_subscription;
+        let _ = gnss_bias;
+        spawner.spawn(crate::modem::gnss::mock::gnss_mock_task(3).unwrap());
+    }
 
     spawner.spawn(crate::modem::modem_task::modem_task(GNSS_INTERVAL, heapless::String::try_from(GNSS_TOPIC).expect("topic error")).unwrap());
     // returns here - everything is owned by the spawned tasks
     defmt::info!("everything spawned");
+}
+
+/// No-modem build entry point. Spawns the GNSS + network mocks and the real
+/// `modem_task` under test; the UART/atat stack and hardware tasks are never
+/// created. Selected via `--features mock_modem` (gated at the startup call).
+#[cfg(feature = "mock_modem")]
+pub fn initiate_mock_modem(spawner: Spawner) {
+    defmt::warn!("MOCK MODEM build: no real modem hardware in use");
+    spawner.spawn(crate::modem::gnss::mock::gnss_mock_task(3).unwrap());
+    spawner.spawn(crate::modem::mqtt::mock::network_mock_task().unwrap());
+    spawner.spawn(
+        crate::modem::modem_task::modem_task(
+            GNSS_INTERVAL,
+            heapless::String::try_from(GNSS_TOPIC).expect("topic error"),
+        )
+        .unwrap(),
+    );
+    defmt::info!("mock modem spawned");
 }
 
 // the listener task that converts uart to atat
