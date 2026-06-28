@@ -4,6 +4,7 @@ use thiserror::Error;
 pub mod commands;
 pub mod state;
 pub mod urc;
+pub mod speed;
 
 #[derive(Debug, Error, defmt::Format)]
 pub enum GnssError {

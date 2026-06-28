@@ -39,7 +39,7 @@ pub struct ClockReady {
 /// simple lower bound, because the modem's pre-sync default may be an epoch year
 /// like 1980/2004/1970 — as two digits `80`/`04`/`70` — and `80 >= 25` would be
 /// a false positive. The window rejects every common default and only passes
-/// real 2025+ dates. Adjust the upper bound if this is still flying in 2035.
+/// real 2026+ dates. Adjust the upper bound if this is still flying in 2035.
 pub fn parse_cclk(resp: &[u8]) -> Result<ClockReady, ()> {
     let text = core::str::from_utf8(resp).map_err(|_| ())?;
 
@@ -75,6 +75,6 @@ pub fn parse_cclk(resp: &[u8]) -> Result<ClockReady, ()> {
         }
     }
 
-    let ready = matches!(year, Some(y) if (25..=35).contains(&y));
+    let ready = matches!(year, Some(y) if (25..=69).contains(&y));
     Ok(ClockReady { ready, year })
 }
