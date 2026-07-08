@@ -27,6 +27,17 @@ pub static UNSUBSCRIBE_RESULT: Signal<CriticalSectionRawMutex, Result<heapless::
 
 pub static PDP_ADDRESS_RESULT: Signal<CriticalSectionRawMutex, Result<bool, ModemError>> = Signal::new();
 
+/// Result of `ModemCommand::EnterPsm` / `ModemCommand::ExitPsm`.
+///
+/// Shared by both directions because PSM transitions are strictly serialised:
+/// `modem_task` is the only caller, and it never has an enter and an exit in
+/// flight at once. `psm::enter_psm`/`exit_psm` `reset()` this before sending, so
+/// a result abandoned by an earlier timeout cannot satisfy the next wait.
+///
+/// `Ok(())` from an enter means the `#SLEEP` URC was observed -- not merely that
+/// `AT#SLEEPMODE` returned `OK`. Never sleep the RP2350 on anything weaker.
+pub static PSM_RESULT: Signal<CriticalSectionRawMutex, Result<(), ModemError>> = Signal::new();
+
 // Issue commands to the modem task
 pub static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, ModemCommand, 4> = Channel::new();
 

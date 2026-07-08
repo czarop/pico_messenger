@@ -42,6 +42,52 @@ pub enum ModemUrc {
     #[at_urc("#IPCFG")]
     IpCfg(heapless::String<32>),
 
+    // ---------------------------------------------------------------------
+    // Power Saving Mode URCs (gated on `AT#SLEEPIND`, see `modem::psm`)
+    // ---------------------------------------------------------------------
+    //
+    // Emitted around every PSM entry/exit once `AT#SLEEPIND=0x44` has been
+    // provisioned. They must be registered here for the same reason as +CEREG
+    // above -- an unregistered URC pollutes the pending command's response
+    // buffer. `#SLEEP` in particular arrives immediately after the `OK` for the
+    // bare `AT#SLEEPMODE`, i.e. exactly when a command is still in flight.
+    //
+    // CRITICAL -- these tokens only match because `AT#SLEEPIND` bit4 (verbosity)
+    // is OFF. atat's `urc_helper` recognises a URC only as
+    // `\r\n{token}(:.*)?\r\n`: the token must be followed immediately by `:` or
+    // CRLF. With verbosity enabled the modem emits `#SLEEP PSM 3599.9s` -- token
+    // then a *space* -- which matches neither form and would be silently folded
+    // into a response buffer. See `psm::SLEEPIND_PSM_AND_ENERGY`.
+    //
+    // The upside of that same strictness: `#SLEEP` is a strict prefix of
+    // `#SLEEPMODE:` / `#SLEEPIND:`, and `#WAKEUP` of `#WAKEUPEVENT:`. Since the
+    // token must be followed by `:` or CRLF, and those responses have `M`/`E`
+    // next, these arms cannot steal the corresponding read-command responses.
+
+    /// `#SLEEP` -- the module is entering sleep mode (AT manual Table 6).
+    ///
+    /// Arrives shortly after the `OK` for the bare `AT#SLEEPMODE`. This, not the
+    /// `OK`, is the confirmation that PSM was actually entered.
+    #[at_urc("#SLEEP")]
+    Sleep,
+
+    /// `#WAKEUP` -- the module has just woken up (AT manual Table 6).
+    ///
+    /// Expected after pulsing GPIO10 low (the `WAKE_UP` pin), or after the modem
+    /// wakes itself for a periodic TAU.
+    #[at_urc("#WAKEUP")]
+    Wakeup,
+
+    /// `#ENERGY: <uWh>` -- consumption since the previous `#ENERGY` report.
+    ///
+    /// Emitted alongside `#SLEEP` when `AT#SLEEPIND` bit6 is set. Purely
+    /// informational, but it is the cheapest per-cycle power telemetry available
+    /// without a meter, so it is worth logging.
+    ///
+    /// Body is a decimal float as text, e.g. `414.7`.
+    #[at_urc("#ENERGY")]
+    Energy(heapless::String<16>),
+
     #[at_urc("#SYSSTART")]
     SysStart,
     #[at_urc("#REBOOT_RESET")]

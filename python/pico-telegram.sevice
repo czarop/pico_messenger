@@ -1,0 +1,14 @@
+# /etc/systemd/system/pico-telegram.service
+[Unit]
+Description=Pico GNSS -> Telegram bridge
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/pico_telegram.py
+Restart=always
+RestartSec=5
+User=tgslocombe
+
+[Install]
+WantedBy=multi-user.target

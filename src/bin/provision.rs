@@ -10,6 +10,16 @@ use {defmt_rtt as _, panic_probe as _};
 // const CERT_DER: &[u8] = include_bytes!("../../test_ecdsa.der");
 const CERT_DER: &[u8] = include_bytes!("../../ca.der");
 
+/// Provision the modem for Power Saving Mode.
+///
+/// Set to `false` to leave the modem always-awake (the previous behaviour) while
+/// debugging the AT/MQTT path -- PSM makes an idle modem stop answering the UART,
+/// which is confusing if you are not expecting it.
+///
+/// Note this only provisions PSM; it does not sleep the modem. At runtime that is
+/// `modem::psm::enter_psm()`. Nothing sleeps until `modem_task` asks.
+const PROVISION_PSM: bool = true;
+
 fn fmt_decimal(n: usize, buf: &mut [u8; 10]) -> &[u8] {
     if n == 0 {
         buf[9] = b'0';
@@ -154,13 +164,90 @@ async fn main(_spawner: Spawner) {
             CERT_DER.len()
         );
 
-        // Step 5: disable PSM sleep so the modem stays awake for the AT/MQTT path.
-        // #SLEEPMODE is saved to NVM and only takes effect after the reboot below.
-        // (Re-enable later for battery operation: AT#SLEEPMODE=1,<hold>,<awake>.)
-        defmt::info!("Disabling PSM sleep (AT#SLEEPMODE=0)...");
-        uart.blocking_write(b"AT#SLEEPMODE=0\r").unwrap();
-        let n = read_line(&mut uart, &mut buf);
-        log_response("SLEEPMODE response", &buf[..n]);
+        // Step 5: Power Saving Mode.
+        //
+        // Set `PROVISION_PSM = false` to fall back to the old always-awake
+        // behaviour (AT#SLEEPMODE=0) while debugging the AT/MQTT path.
+        //
+        // Every one of these is NVM-saved and takes effect only after the
+        // AT#RESET=1 below -- you cannot enable sleep mode and use it in the same
+        // session. At runtime the modem is slept with the bare execution form
+        // `AT#SLEEPMODE` (no parameters) and woken by pulsing GPIO10 low.
+        if PROVISION_PSM {
+            // Sleep/wake URCs. 0x44 = b2 (PSM event) | b6 (energy report).
+            //
+            // NOT the manual's 0x7F: bit4 (verbosity) turns the URC into
+            // `#SLEEP PSM 3599.9s`, and atat's digester only recognises
+            // `\r\n{token}(:.*)?\r\n` -- a space after the token matches neither
+            // form, so the line would be folded into the next command's response
+            // buffer. Bit5 emits a bare `NBIOT SW version ...` line with no `#`
+            // prefix, same problem. See modem::psm::SLEEPIND_PSM_AND_ENERGY.
+            defmt::info!("Enabling sleep URCs (AT#SLEEPIND=0x44)...");
+            uart.blocking_write(b"AT#SLEEPIND=0x44\r").unwrap();
+            let n = read_line(&mut uart, &mut buf);
+            log_response("SLEEPIND response", &buf[..n]);
+
+            // Host -> modem wake. pwrkey_evt = 0b1111: enable, active LOW, pull
+            // enabled, pull-up. Board maps RP2350 GPIO10 -> ST87M01 WAKE_UP (39).
+            // uart_evt = 0b0011: enable, active low -- a free fallback wake path.
+            defmt::info!("Arming wake pin (AT#WAKEUPEVENT=15,3)...");
+            uart.blocking_write(b"AT#WAKEUPEVENT=15,3\r").unwrap();
+            let n = read_line(&mut uart, &mut buf);
+            log_response("WAKEUPEVENT response", &buf[..n]);
+
+            // <hold_time> = 300 s: seconds after the last AT command before the
+            // modem *auto*-sleeps. Deliberately long -- GNSS fixes arrive as
+            // #GNSSFIX URCs with no AT traffic to keep the hold timer alive, so a
+            // short value would drop the modem into PSM mid-fix. We never rely on
+            // auto-sleep; entry is always the explicit bare AT#SLEEPMODE.
+            // <awake_time> = 0: stuck-watchdog disabled (only arms above 600 s).
+            defmt::info!("Enabling sleep mode (AT#SLEEPMODE=1,300,0)...");
+            uart.blocking_write(b"AT#SLEEPMODE=1,300,0\r").unwrap();
+            let n = read_line(&mut uart, &mut buf);
+            log_response("SLEEPMODE response", &buf[..n]);
+
+            // Network PSM contract. T3412 = "00100100" = 4 hours (GPRS Timer 3),
+            // T3324 = "00000001" = 2 seconds (GPRS Timer 2).
+            //
+            // T3412 is NOT the uplink cadence -- the RP2350 POWMAN timer owns
+            // that. It only bounds how long the modem may stay radio-silent
+            // before waking *itself* for a Tracking Area Update. Every uplink we
+            // send resets it, so long is strictly better for an uplink-only
+            // device: a short value would burn radio on pointless TAUs through a
+            // multi-hour DEEP_REST park.
+            //
+            // Requested, not granted. Read back <Periodic-TAU> from the CEREG
+            // URC enabled below. Positions 2 and 3 (RAU, GPRS-READY) are
+            // unsupported on NB-IoT and ignored, hence empty.
+            //
+            // Beware: "00100100" is 4 HOURS in position 4 and 4 MINUTES in
+            // position 5. Different unit tables. Do not swap them.
+            defmt::info!("Requesting PSM (AT+CPSMS=1,,,\"00100100\",\"00000001\")...");
+            uart.blocking_write(b"AT+CPSMS=1,,,\"00100100\",\"00000001\"\r")
+                .unwrap();
+            let n = read_line(&mut uart, &mut buf);
+            log_response("CPSMS response", &buf[..n]);
+
+            // n=4 appends <Active-Time>,<Periodic-TAU> to the +CEREG URC -- the
+            // only way to learn what the network actually granted (AT manual 6.9).
+            // <stat> stays first, so network_task's cereg_registered() is
+            // unaffected; ModemUrc::Cereg already reserves String<96> for the
+            // longer body.
+            defmt::info!("Enabling PSM-form registration URC (AT+CEREG=4)...");
+            uart.blocking_write(b"AT+CEREG=4\r").unwrap();
+            let n = read_line(&mut uart, &mut buf);
+            log_response("CEREG response", &buf[..n]);
+        } else {
+            // Always-awake: keeps the modem responsive for AT/MQTT debugging.
+            defmt::info!("PSM disabled by PROVISION_PSM (AT#SLEEPMODE=0)...");
+            uart.blocking_write(b"AT#SLEEPMODE=0\r").unwrap();
+            let n = read_line(&mut uart, &mut buf);
+            log_response("SLEEPMODE response", &buf[..n]);
+
+            uart.blocking_write(b"AT+CPSMS=0\r").unwrap();
+            let n = read_line(&mut uart, &mut buf);
+            log_response("CPSMS response", &buf[..n]);
+        }
 
         // Step 6: enable +CGEV packet-domain event reporting (mode 1 = forward URCs).
         // Takes effect immediately and persists across the reset below.
@@ -177,9 +264,15 @@ async fn main(_spawner: Spawner) {
         let n = read_line(&mut uart, &mut buf);
         log_response("CTZR response", &buf[..n]);
 
+        // AT#SLEEPMODE / AT#WAKEUPEVENT / AT#SLEEPIND are inert until this reboot.
         defmt::info!("Saving to NVM (AT#RESET=1)...");
         uart.blocking_write(b"AT#RESET=1\r").unwrap();
         defmt::info!("Done. Wait 15s then flash main firmware.");
+        if PROVISION_PSM {
+            defmt::info!(
+                "PSM provisioned. Modem will auto-sleep 300s after the last AT command."
+            );
+        }
     } else {
         defmt::error!("Cert NOT stored - skipping verify and reset. Fix upload first.");
     }

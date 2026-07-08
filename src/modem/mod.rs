@@ -9,5 +9,6 @@ pub mod urc;
 pub mod gnss;
 pub mod mqtt;
 pub mod modem_task;
+pub mod psm;
 
 pub type UpdateIntervalSecs = u32;

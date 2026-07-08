@@ -18,7 +18,11 @@ use dotenvy_macro::dotenv;
 
 pub const INGRESS_BUF_SIZE: usize = 1024; // where incoming requests sit
 pub const URC_CAPACITY: usize = 128; // number of broadcast 'messages' in the queue
-pub const URC_SUBSCRIBERS: usize = 3; // number of async tasks listening for broadcast messages
+// command_task, network_task, gnss_task, and one spare. command_task needs its
+// own subscription so `EnterPsm` can await the `#SLEEP` confirmation without
+// routing it through another task -- keeping the whole modem boundary in one
+// place. Raising this costs URC_CAPACITY bytes of queue per subscriber.
+pub const URC_SUBSCRIBERS: usize = 4; // number of async tasks listening for broadcast messages
 
 //mqtt params:
 const WILL_TOPIC: &str = "pico/mqtt/status";
@@ -31,11 +35,15 @@ bind_interrupts!(struct Irqs {
     UART1_IRQ => BufferedInterruptHandler<UART1>;
 }); // interrupt ongoing tasks to add incoming messages to the buffer
 
+/// `wake_pin` is RP2350 GPIO10 -> ST87M01 `WAKE_UP` (pin 39), per the Challenger+
+/// RP2350 NB-IoT datasheet. Active low with an internal pull-up (see
+/// `psm::WAKEUPEVENT_PWRKEY`), so it must be constructed at `Level::High`.
 pub fn initiate_modem(
     spawner: Spawner,
     tx_pin: Peri<'static, PIN_4>,
     rx_pin: Peri<'static, PIN_5>,
     gnss_bias: Output<'static>,
+    wake_pin: Output<'static>,
     uart: Peri<'static, UART1>,
 ) {
     // statically allocate the mutable memory for the buffers
@@ -85,7 +93,13 @@ pub fn initiate_modem(
         atat::Config::default(),
     ));
 
-    spawner.spawn(command_task(client).unwrap());
+    // command_task's own subscription: it awaits `#SLEEP` after `AT#SLEEPMODE`,
+    // and logs `#ENERGY` (uWh consumed since the last report -- the only power
+    // telemetry available before a meter is on the board).
+    let command_urc_subscription = URC_CHANNEL
+        .subscribe()
+        .expect("could not subscribe to urc channel");
+    spawner.spawn(command_task(client, wake_pin, command_urc_subscription).unwrap());
 
     let urc_subscription = URC_CHANNEL.subscribe().expect("could not subscribe to urc channel");
     let socket = SocketCreate::new(60, 60);
@@ -128,6 +142,9 @@ pub fn initiate_modem(
 /// No-modem build entry point. Spawns the GNSS + network mocks and the real
 /// `modem_task` under test; the UART/atat stack and hardware tasks are never
 /// created. Selected via `--features mock_modem` (gated at the startup call).
+/// Note: `mock_modem` implies `mock_modem_psm` (see Cargo.toml). Without that,
+/// `psm::enter_psm` would push `ModemCommand::EnterPsm` onto `COMMAND_CHANNEL`
+/// and block forever -- there is no `command_task` in this build to consume it.
 #[cfg(feature = "mock_modem")]
 pub fn initiate_mock_modem(spawner: Spawner) {
     defmt::warn!("MOCK MODEM build: no real modem hardware in use");
