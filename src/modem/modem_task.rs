@@ -190,6 +190,17 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
         // through the sleep window. Covers both match arms — GNSS is started at
         // the top of the loop regardless of how the cycle ended.
         stop_gnss(&mut gnss_watcher).await;
+
+        loop {
+            if let MqttStackState::Down = mqtt_watcher.changed().await {
+                break;
+            }
+        }
+
+        crate::modem::psm::enter_psm().await.expect("Failed to enter psm");
+        embassy_time::Timer::after(embassy_time::Duration::from_secs(300)).await;
+        // crate::power::sleep_until(Duration::from_secs(gnss_interval as u64)).await;
+        // crate::modem::psm::exit_psm().await.expect("Failed to exit psm");
  
         Timer::after(Duration::from_secs(gnss_interval as u64)).await;
     }

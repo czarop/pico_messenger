@@ -8,6 +8,7 @@ pub mod subscribe;
 pub mod pdn;
 pub mod reset;
 pub mod clock;
+pub mod cereg;
 
 #[derive(Clone, AtatResp)]
 pub struct OkResponse;

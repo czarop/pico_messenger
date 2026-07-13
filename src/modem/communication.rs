@@ -1,5 +1,6 @@
 use crate::modem::error::ModemError;
 use crate::modem::gnss_task::GnssCommand;
+use crate::modem::mqtt::commands::cereg;
 use crate::modem::mqtt::commands::clock::ClockReady;
 use crate::modem::mqtt::commands::socket::OpenSockets;
 use crate::modem::network_task::MqttCommand;
@@ -44,3 +45,5 @@ pub static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, ModemCommand, 4> = 
 //Issue commands from app_task to control gnss
 pub static GNSS_COMMAND: Signal<CriticalSectionRawMutex, GnssCommand> = Signal::new();
 pub static MQTT_COMMAND: Signal<CriticalSectionRawMutex, MqttCommand> = Signal::new();
+
+pub static CEREG_RESULT: Signal<CriticalSectionRawMutex, Result<cereg::CeregStatus, ModemError>> = Signal::new();

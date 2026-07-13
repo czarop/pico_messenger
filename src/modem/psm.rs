@@ -74,14 +74,16 @@ use crate::modem::mqtt::commands::OkResponse;
 ///
 /// Requested, not granted. The network decides; read back the granted value from
 /// `AT+CEREG=4`/`=5` (`<Periodic-TAU>`), or observe the `#SLEEP PSM <secs>s` URC.
-pub const T3412_REQUESTED: &str = "00100100"; // 001(1 hour) x 00100(4) = 4 h
+// pub const T3412_REQUESTED: &str = "00100100"; // 001(1 hour) x 00100(4) = 4 h
 
 /// Requested active time (T3324): **2 seconds**.
 ///
 /// How long the modem stays reachable after the RRC connection releases, before
 /// dropping into PSM. Short = prompt PSM entry. We tear the MQTT session down
 /// before sleeping, so there is no in-flight downlink to wait for.
-pub const T3324_REQUESTED: &str = "00000001"; // 000(2 s) x 00001(1) = 2 s
+// pub const T3324_REQUESTED: &str = "00000001"; // 000(2 s) x 00001(1) = 2 s
+pub const T3412_REQUESTED: &str = "00000001"; // 000(10 min) x 00001(1) = 10 min
+pub const T3324_REQUESTED: &str = "00000001"; // 000(2 s)    x 00001(1) = 2 s
 
 // ---------------------------------------------------------------------------
 // Provision-time parameters

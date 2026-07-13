@@ -16,7 +16,7 @@ dotenvy_macro = "0.15"
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 defmt = "1"
-defmt-rtt = "1"
+defmt-rtt = { version = "1", features = ["disable-blocking-mode"] }
 # The Wireless stack for the Pico W
 # cyw43 = { version = "0.7", features = ["defmt"] }
 # cyw43-pio = { version = "0.10" }
@@ -133,6 +133,11 @@ atat = {git = "https://github.com/FactbirdHQ/atat", rev = "edceb1a"}
 [target.'cfg( target_arch = "arm" )'.dependencies]
 panic-probe = { version = "1", features = ["print-defmt"] }
 
-[features] 
+[features]
 mock_gnss = []
-mock_modem = []
+# modem never actually enters PSM (stays awake + attached on the test rig)
+mock_modem_psm = []
+# no modem hardware at all; implies mock_modem_psm because there is no
+# command_task to consume ModemCommand::EnterPsm in this build
+mock_modem = ["mock_gnss", "mock_modem_psm"]
+mock_host_sleep = []

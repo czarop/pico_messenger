@@ -19,12 +19,14 @@ reboot:
 
 
 runcm:
+    DEV_BOARD=challenger cargo run --release --bin pico_messenger --features mock_gnss,mock_host_sleep
+runcg:
     DEV_BOARD=challenger cargo run --release --bin pico_messenger --features mock_gnss
-run:
-    cargo run --release --bin pico_messenger
+runc:
+    DEV_BOARD=challenger cargo run --release --bin pico_messenger
 
 runm:
-    cargo run --release --bin pico_messenger --features mock_modem,mock_gnss
+    cargo run --release --bin pico_messenger --features mock_modem
 
 provision:
     cargo run --release --bin provision

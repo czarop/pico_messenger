@@ -28,7 +28,7 @@ pub const URC_SUBSCRIBERS: usize = 4; // number of async tasks listening for bro
 const WILL_TOPIC: &str = "pico/mqtt/status";
 const WILL_MESSAGE: &str = "offline";
 
-const GNSS_INTERVAL: u32 = 10;
+const GNSS_INTERVAL: u32 = 60;
 const GNSS_TOPIC: &str = "pico/mqtt/gnss_update";
 
 bind_interrupts!(struct Irqs {

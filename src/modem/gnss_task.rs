@@ -25,6 +25,13 @@ pub async fn gnss_task(
     defmt::info!("gnss task spawned");
     let state_sender = communication::GNSS_STATE.sender();
     state_sender.send(GNSSState::Off);
+    #[cfg(not(feature = "mock_gnss"))]
+    {
+        defmt::info!("clearing any stale GNSS engine from a previous run");
+        COMMAND_CHANNEL.send(ModemCommand::GnssDeinit).await;
+        let _ = communication::GNSS_RESULT.wait().await;
+    }
+
     let mut fix_interval: Option<UpdateIntervalSecs> = None;
     let incoming_commands = &GNSS_COMMAND;
     let mut state_watcher = communication::GNSS_STATE.receiver().unwrap();

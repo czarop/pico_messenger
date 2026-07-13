@@ -2,7 +2,7 @@ use super::setup::{INGRESS_BUF_SIZE, URC_CAPACITY, URC_SUBSCRIBERS};
 use crate::modem::communication::{self, COMMAND_CHANNEL};
 use crate::modem::error::ModemError;
 use crate::modem::gnss::commands::{deinit::GnssDeinit, fix::GnssFix, init::GnssInit};
-use crate::modem::mqtt::commands::{clock, config, connect, pdn, publish, reset, socket, subscribe};
+use crate::modem::mqtt::commands::{cereg, clock, config, connect, pdn, publish, reset, socket, subscribe};
 use crate::modem::psm::{
     AtPing, EnterSleep, WAKE_PING_ATTEMPTS, WAKE_PING_INTERVAL_MS, WAKE_PULSE_MS, WAKE_SETTLE_MS,
 };
@@ -14,7 +14,7 @@ use embassy_rp::uart;
 use embassy_time::{Duration, Timer, with_timeout};
 
 /// How long to wait for the `#SLEEP` URC after `AT#SLEEPMODE` returns `OK`.
-const SLEEP_URC_TIMEOUT: Duration = Duration::from_secs(5);
+const SLEEP_URC_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub enum ModemCommand {
     GnssInit(GnssInit),
@@ -34,6 +34,7 @@ pub enum ModemCommand {
     GetPdpAddress(pdn::CgPaddrQuery),
     EnterPsm,
     ExitPsm,
+    CeregQuery(cereg::CeregQuery),
 }
 
 /// Sole owner of the atat client and of the modem wake pin -- the true modem
@@ -161,6 +162,12 @@ pub async fn command_task(
                 let result = exit_psm(client, &mut urc_sub, &mut wake_pin).await;
                 communication::PSM_RESULT.signal(result);
             }
+            ModemCommand::CeregQuery(q) => match client.send(&q).await {
+                Ok(r) => communication::CEREG_RESULT.signal(Ok(r)),
+                Err(e) => communication::CEREG_RESULT.signal(Err(ModemError::from(e))),
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
+            },
         }
     }
 }
