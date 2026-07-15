@@ -155,94 +155,94 @@ pub async fn startup(spawner: Spawner) {
 
     spawner.spawn(bno085::ui_task(IMU_REPORTS.receiver()).expect("failed to spawn imu task"));
 
-    info!("entering loop");
+    // info!("entering loop");
 
-    loop {
-        // ENTER_SLEEP.signal(());
+    // loop {
+    //     // ENTER_SLEEP.signal(());
 
-        let soc = match max17048.soc().await {
-            Ok(soc) => soc,
-            Err(e) => {
-                // error!("Failed to read state of charge: {:?}", e);
-                0
-            }
-        };
+    //     let soc = match max17048.soc().await {
+    //         Ok(soc) => soc,
+    //         Err(e) => {
+    //             // error!("Failed to read state of charge: {:?}", e);
+    //             0
+    //         }
+    //     };
 
-        let is_charging = match max17048.charge_rate().await {
-            Ok(rate) => {
-                info!("Charge rate: {}%/hr", rate);
-                rate > 0.0
-            }
-            Err(e) => {
-                // error!("Failed to read charge rate: {:?}", e);
-                false
-            }
-        };
+    //     let is_charging = match max17048.charge_rate().await {
+    //         Ok(rate) => {
+    //             info!("Charge rate: {}%/hr", rate);
+    //             rate > 0.0
+    //         }
+    //         Err(e) => {
+    //             // error!("Failed to read charge rate: {:?}", e);
+    //             false
+    //         }
+    //     };
 
-        let (temp_reading, humidity_reading) = match temp_senor
-            .read_temperature(temp_sensor::TempSensorPowerMode::LPM3)
-            .await
-        {
-            Ok(r) => {
-                let mut temp: String<24> = String::new();
-                core::write!(temp, "Temp: {:.1}C", r.temperature).unwrap();
-                let mut humidity: String<24> = String::new();
-                core::write!(humidity, "Humidity: {:.1}%", r.humidity).unwrap();
-                (Some(temp), Some(humidity))
-            }
-            Err(e) => {
-                error!("{:?}", defmt::Debug2Format(&e));
-                let err_string: String<24> =
-                    String::from_str("Temp Senor Error").expect("error making error string");
-                (Some(err_string), None)
-            }
-        };
-        let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
+    //     let (temp_reading, humidity_reading) = match temp_senor
+    //         .read_temperature(temp_sensor::TempSensorPowerMode::LPM3)
+    //         .await
+    //     {
+    //         Ok(r) => {
+    //             let mut temp: String<24> = String::new();
+    //             core::write!(temp, "Temp: {:.1}C", r.temperature).unwrap();
+    //             let mut humidity: String<24> = String::new();
+    //             core::write!(humidity, "Humidity: {:.1}%", r.humidity).unwrap();
+    //             (Some(temp), Some(humidity))
+    //         }
+    //         Err(e) => {
+    //             error!("{:?}", defmt::Debug2Format(&e));
+    //             let err_string: String<24> =
+    //                 String::from_str("Temp Senor Error").expect("error making error string");
+    //             (Some(err_string), None)
+    //         }
+    //     };
+    //     let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
 
-        let altitude = match pressure_sensor.read_altitude().await {
-            Ok(alt) => {
-                let mut alt_str: String<24> = String::new();
-                core::write!(alt_str, "Alt: {:.1}m", alt).unwrap();
-                Some(alt_str)
-            }
-            Err(e) => {
-                error!("Failed to read altitude: {:?}", e);
-                None
-            }
-        };
+    //     let altitude = match pressure_sensor.read_altitude().await {
+    //         Ok(alt) => {
+    //             let mut alt_str: String<24> = String::new();
+    //             core::write!(alt_str, "Alt: {:.1}m", alt).unwrap();
+    //             Some(alt_str)
+    //         }
+    //         Err(e) => {
+    //             error!("Failed to read altitude: {:?}", e);
+    //             None
+    //         }
+    //     };
 
-        let display_info = StatusScreen {
-            battery: battery_level,
-            message: [
-                temp_reading.clone(),
-                humidity_reading.clone(),
-                Some(
-                    heapless::String::<24>::from_str("Updated!")
-                        .expect("could not make heapless string"),
-                ),
-                altitude,
-                None,
-            ],
-        };
-        let _ = display.show_message(display_info).await;
+    //     let display_info = StatusScreen {
+    //         battery: battery_level,
+    //         message: [
+    //             temp_reading.clone(),
+    //             humidity_reading.clone(),
+    //             Some(
+    //                 heapless::String::<24>::from_str("Updated!")
+    //                     .expect("could not make heapless string"),
+    //             ),
+    //             altitude,
+    //             None,
+    //         ],
+    //     };
+    //     let _ = display.show_message(display_info).await;
 
-        embassy_time::Timer::after(embassy_time::Duration::from_secs(15)).await;
+    //     embassy_time::Timer::after(embassy_time::Duration::from_secs(15)).await;
 
-        // let display_info = StatusScreen {
-        //     battery: battery_level,
-        //     message: [
-        //         temp_reading,
-        //         humidity_reading,
-        //         Some(
-        //             heapless::String::<24>::from_str("Shake to update")
-        //                 .expect("could not make heapless string"),
-        //         ),
-        //         None,
-        //         None,
-        //     ],
-        // };
-        // let _ = display.show_message(display_info).await;
-    }
+    //     // let display_info = StatusScreen {
+    //     //     battery: battery_level,
+    //     //     message: [
+    //     //         temp_reading,
+    //     //         humidity_reading,
+    //     //         Some(
+    //     //             heapless::String::<24>::from_str("Shake to update")
+    //     //                 .expect("could not make heapless string"),
+    //     //         ),
+    //     //         None,
+    //     //         None,
+    //     //     ],
+    //     // };
+    //     // let _ = display.show_message(display_info).await;
+    // }
 
     let i2c_for_rtc = i2c::I2cDevice::new(i2c0_bus);
     match crate::rtc::Pcf8523::new(i2c_for_rtc).await {
