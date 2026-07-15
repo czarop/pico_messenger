@@ -7,4 +7,4 @@ pub mod display;
 pub mod modem;
 pub mod sensors;
 pub mod power;
-pub mod ring_watch;
+pub mod rtc;

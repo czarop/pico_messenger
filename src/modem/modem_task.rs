@@ -191,17 +191,49 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
         // the top of the loop regardless of how the cycle ended.
         stop_gnss(&mut gnss_watcher).await;
 
+        // Wait for network_task to finish tearing down (unsub -> disconnect ->
+        // Down). MqttCommand::Stop is fire-and-forget, so without this the modem
+        // would still hold a live MQTT session and open TCP socket when
+        // AT#SLEEPMODE arrives — it answers OK and then does NOT sleep.
         loop {
             if let MqttStackState::Down = mqtt_watcher.changed().await {
                 break;
             }
         }
 
-        crate::modem::psm::enter_psm().await.expect("Failed to enter psm");
-        embassy_time::Timer::after(embassy_time::Duration::from_secs(300)).await;
-        // crate::power::sleep_until(Duration::from_secs(gnss_interval as u64)).await;
-        // crate::modem::psm::exit_psm().await.expect("Failed to exit psm");
- 
-        Timer::after(Duration::from_secs(gnss_interval as u64)).await;
+        // Modem into PSM. enter_psm awaits the #SLEEP URC (~7-12s: the modem can't
+        // sleep until the network releases RRC), not merely the OK. A failure here
+        // means the modem is still awake — don't dormant the host on top of that,
+        // just skip sleeping this cycle and retry.
+        match crate::modem::psm::enter_psm().await {
+            Ok(()) => {
+                // Host into DORMANT until the RTC INT fires. The RTC countdown is
+                // the master cadence now (the POWMAN alarm can't wake dormant; the
+                // modem's TAU is floored by the network at 4h). Under
+                // mock_host_sleep this waits on the real INT edge instead of
+                // dormanting, keeping the probe attached.
+                //
+                // NOTE: assumes the RTC countdown is already armed (rtc::init +
+                // set_countdown_minutes + power::init, done once at startup). Until
+                // the RTC breakout is fitted, this build must run with a mock or it
+                // will hang waiting on an INT that never comes — which is the
+                // correct, safe behaviour, not a bug.
+                crate::power::sleep_dormant().await;
+
+                // Woken. Bring the modem back before the next cycle's AT traffic.
+                if let Err(e) = crate::modem::psm::exit_psm().await {
+                    error!(
+                        "exit_psm failed: {:?} — continuing; next cmd may re-wake via UART",
+                        e
+                    );
+                }
+            }
+            Err(e) => {
+                warn!("enter_psm failed: {:?} — skipping sleep this cycle", e);
+                // Modem stayed awake; fall through to a plain timed wait so we
+                // don't spin. embassy_time still runs (no dormant happened).
+                Timer::after(Duration::from_secs(gnss_interval as u64)).await;
+            }
+        }
     }
 }

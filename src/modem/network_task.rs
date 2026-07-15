@@ -478,24 +478,24 @@ pub async fn network_task(
                             match communication::PDP_ADDRESS_RESULT.wait().await {
                                 Ok(true) => {
                                     info!("PDP context active - seeding IpUp");
-                                    // Log the PSM timers the network actually GRANTED. Requested != granted:
-                                    // AT+CPSMS only asks, and the network can hand back something else entirely.
-                                    // The granted T3412 is the modem's self-wake period and therefore the only
-                                    // available RP2350 dormant-wake clock -- so this number decides the whole
-                                    // power architecture. Query it rather than waiting for the +CEREG URC, which
-                                    // fires only on a state change and is routinely missed.
-                                    communication::CEREG_RESULT.reset();
-                                    COMMAND_CHANNEL.send(ModemCommand::CeregQuery(cereg::CeregQuery)).await;
-                                    match communication::CEREG_RESULT.wait().await {
-                                        Ok(s) => defmt::info!(
-                                            "PSM GRANTED: stat={} active_time={}s periodic_TAU={}s ({} min)",
-                                            s.stat,
-                                            s.active_time_secs,
-                                            s.periodic_tau_secs,
-                                            s.periodic_tau_secs.map(|t| t / 60)
-                                        ),
-                                        Err(e) => defmt::warn!("CEREG? query failed: {:?}", e),
-                                    }
+                                    // // Log the PSM timers the network actually GRANTED. Requested != granted:
+                                    // // AT+CPSMS only asks, and the network can hand back something else entirely.
+                                    // // The granted T3412 is the modem's self-wake period and therefore the only
+                                    // // available RP2350 dormant-wake clock -- so this number decides the whole
+                                    // // power architecture. Query it rather than waiting for the +CEREG URC, which
+                                    // // fires only on a state change and is routinely missed.
+                                    // communication::CEREG_RESULT.reset();
+                                    // COMMAND_CHANNEL.send(ModemCommand::CeregQuery(cereg::CeregQuery)).await;
+                                    // match communication::CEREG_RESULT.wait().await {
+                                    //     Ok(s) => defmt::info!(
+                                    //         "PSM GRANTED: stat={} active_time={}s periodic_TAU={}s ({} min)",
+                                    //         s.stat,
+                                    //         s.active_time_secs,
+                                    //         s.periodic_tau_secs,
+                                    //         s.periodic_tau_secs.map(|t| t / 60)
+                                    //     ),
+                                    //     Err(e) => defmt::warn!("CEREG? query failed: {:?}", e),
+                                    // }
                                     state_sender.send(state::MqttStackState::IpUp);
                                     seeded = true;
                                     break;

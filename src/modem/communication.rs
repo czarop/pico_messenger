@@ -46,4 +46,4 @@ pub static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, ModemCommand, 4> = 
 pub static GNSS_COMMAND: Signal<CriticalSectionRawMutex, GnssCommand> = Signal::new();
 pub static MQTT_COMMAND: Signal<CriticalSectionRawMutex, MqttCommand> = Signal::new();
 
-pub static CEREG_RESULT: Signal<CriticalSectionRawMutex, Result<cereg::CeregStatus, ModemError>> = Signal::new();
+// pub static CEREG_RESULT: Signal<CriticalSectionRawMutex, Result<cereg::CeregStatus, ModemError>> = Signal::new();

@@ -79,18 +79,18 @@ pub async fn startup(spawner: Spawner) {
 
 
 
-    crate::power::init(p.POWMAN, Irqs);
+    
 
 
 
-    // let i2c0 = I2c::new_async(
-    //     p.I2C0,
-    //     p.PIN_21,
-    //     p.PIN_20,
-    //     Irqs,
-    //     embassy_rp::i2c::Config::default(),
-    // );
-    // let i2c0_bus = I2C0_BUS.init(Mutex::new(i2c0));
+    let i2c0 = I2c::new_async(
+        p.I2C0,
+        p.PIN_21,
+        p.PIN_20,
+        Irqs,
+        embassy_rp::i2c::Config::default(),
+    );
+    let i2c0_bus = I2C0_BUS.init(Mutex::new(i2c0));
 
     // let i2c1 = I2c::new_async(
     //     p.I2C1,
@@ -244,7 +244,17 @@ pub async fn startup(spawner: Spawner) {
     //     // let _ = display.show_message(display_info).await;
     // }
 
-    spawner.spawn(crate::ring_watch::ring_watch_task(p.PIN_8).unwrap());
+    let i2c_for_rtc = i2c::I2cDevice::new(i2c0_bus);
+    let mut rtc = crate::rtc::Pcf8523::new(i2c_for_rtc).await;
+    match rtc {
+        Ok(ref mut r) => { r.set_countdown_minutes(15).await.ok(); }
+        Err(crate::rtc::RtcError::ClockUnreliable) => { /* expected cold-start; reseed from GNSS later */ }
+        Err(e) => defmt::error!("RTC init failed: {:?}", e),
+    }
+    let rtc_int = embassy_rp::gpio::Input::new(p.PIN_23, embassy_rp::gpio::Pull::Up); // D5=GPIO23, or your choice
+    crate::power::init(rtc_int).await;
+
+
 
     let gnss_bias = embassy_rp::gpio::Output::new(p.PIN_11, embassy_rp::gpio::Level::High);
     let wake_pin = embassy_rp::gpio::Output::new(p.PIN_10, embassy_rp::gpio::Level::High);

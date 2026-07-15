@@ -34,7 +34,7 @@ pub enum ModemCommand {
     GetPdpAddress(pdn::CgPaddrQuery),
     EnterPsm,
     ExitPsm,
-    CeregQuery(cereg::CeregQuery),
+    // CeregQuery(cereg::CeregQuery),
 }
 
 /// Sole owner of the atat client and of the modem wake pin -- the true modem
@@ -162,12 +162,12 @@ pub async fn command_task(
                 let result = exit_psm(client, &mut urc_sub, &mut wake_pin).await;
                 communication::PSM_RESULT.signal(result);
             }
-            ModemCommand::CeregQuery(q) => match client.send(&q).await {
-                Ok(r) => communication::CEREG_RESULT.signal(Ok(r)),
-                Err(e) => communication::CEREG_RESULT.signal(Err(ModemError::from(e))),
-                #[allow(unreachable_patterns)]
-                _ => unreachable!(),
-            },
+            // ModemCommand::CeregQuery(q) => match client.send(&q).await {
+            //     Ok(r) => communication::CEREG_RESULT.signal(Ok(r)),
+            //     Err(e) => communication::CEREG_RESULT.signal(Err(ModemError::from(e))),
+            //     #[allow(unreachable_patterns)]
+            //     _ => unreachable!(),
+            // },
         }
     }
 }
