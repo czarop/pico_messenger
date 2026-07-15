@@ -245,13 +245,11 @@ pub async fn startup(spawner: Spawner) {
     // }
 
     let i2c_for_rtc = i2c::I2cDevice::new(i2c0_bus);
-    let mut rtc = crate::rtc::Pcf8523::new(i2c_for_rtc).await;
-    match rtc {
-        Ok(ref mut r) => { r.set_countdown_minutes(15).await.ok(); }
-        Err(crate::rtc::RtcError::ClockUnreliable) => { /* expected cold-start; reseed from GNSS later */ }
-        Err(e) => defmt::error!("RTC init failed: {:?}", e),
+    match crate::rtc::Pcf8523::new(i2c_for_rtc).await {
+        Ok(mut r) => { r.set_countdown_minutes(15).await.ok(); }
+        Err(e) => defmt::error!("RTC init failed (I2C): {:?}", e),
     }
-    let rtc_int = embassy_rp::gpio::Input::new(p.PIN_23, embassy_rp::gpio::Pull::Up); // D5=GPIO23, or your choice
+    let rtc_int = embassy_rp::gpio::Input::new(p.PIN_23, embassy_rp::gpio::Pull::Up);
     crate::power::init(rtc_int).await;
 
 
