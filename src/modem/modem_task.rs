@@ -18,6 +18,17 @@ const SUBSCRIBE_RETRY: Duration = Duration::from_secs(1);
 const GNSS_FIX_PERIOD_SECS: UpdateIntervalSecs = 3;
 const GNSS_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Wake interval, in whole minutes, armed on the RTC before each dormant sleep.
+///
+/// This is the tracking cadence. The RTC countdown resolution is 1 minute (1/60 Hz
+/// source), so this is a `u8` of minutes, 1..=255. When the regime state machine
+/// lands, this becomes per-regime (ACTIVE=15, STATIONARY_PENDING=10) rather than a
+/// single constant.
+///
+/// `gnss_interval` (the old `Timer::after` seconds value) is now used only on the
+/// enter_psm-failure fallback path, where no real sleep happens.
+const SLEEP_MINUTES: u8 = 1;
+
 
 /// Await the next genuine GNSS `Fix`, skipping transient states
 /// (`Acquiring`, `Initialising`, ...). Caller must bound this with a timeout.
@@ -207,17 +218,21 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
         // just skip sleeping this cycle and retry.
         match crate::modem::psm::enter_psm().await {
             Ok(()) => {
+                // Arm the wake fresh, counting from NOW (cycle done, about to
+                // sleep) rather than free-running from startup. This makes the
+                // cadence deterministic -- cycle-end to next-wake -- instead of
+                // letting a fixed pulse drift against the cycle phase. It also
+                // clears the previous wake's latched INT flag, without which the
+                // pending flag could immediately re-trigger. Per-cycle arming is
+                // what will later let each regime pick its own interval
+                // (ACTIVE=15, STATIONARY_PENDING=10, DEEP_REST=disarm).
+                crate::rtc::arm_wake_minutes(SLEEP_MINUTES).await;
+
                 // Host into DORMANT until the RTC INT fires. The RTC countdown is
                 // the master cadence now (the POWMAN alarm can't wake dormant; the
                 // modem's TAU is floored by the network at 4h). Under
                 // mock_host_sleep this waits on the real INT edge instead of
                 // dormanting, keeping the probe attached.
-                //
-                // NOTE: assumes the RTC countdown is already armed (rtc::init +
-                // set_countdown_minutes + power::init, done once at startup). Until
-                // the RTC breakout is fitted, this build must run with a mock or it
-                // will hang waiting on an INT that never comes — which is the
-                // correct, safe behaviour, not a bug.
                 crate::power::sleep_dormant().await;
 
                 // Woken. Bring the modem back before the next cycle's AT traffic.

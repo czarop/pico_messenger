@@ -131,29 +131,29 @@ pub async fn startup(spawner: Spawner) {
     i2c_scan(&mut i2c_for_pressure_sensor).await;
 
     let mut display = screen::Display::new(i2c_for_display).await;
-    let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_sensor);
-    let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
+    // let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_sensor);
+    // let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
     let my_altitude_known = 21.0;
-    let mut pressure_sensor =
-        crate::sensors::altimeter::Altimeter::new(i2c_for_pressure_sensor, Some(my_altitude_known))
-            .await
-            .expect("could not initiate pressure sensor");
-    let mut bno085 = bno085::Imu::new(i2c_for_bno085, p.PIN_3, p.PIN_2).await;
+    // let mut pressure_sensor =
+    //     crate::sensors::altimeter::Altimeter::new(i2c_for_pressure_sensor, Some(my_altitude_known))
+    //         .await
+    //         .expect("could not initiate pressure sensor");
+    // let mut bno085 = bno085::Imu::new(i2c_for_bno085, p.PIN_3, p.PIN_2).await;
 
-    bno085
-        .enable_rotation_vector(1000)
-        .await
-        .expect("Failed to enable rotation vector");
-    // bno085.enable_activity_recognition().await.expect("failed to initiate activity type");
-    bno085
-        .enable_significant_motion_wake()
-        .await
-        .expect("failed to enable shake detection");
+    // bno085
+    //     .enable_rotation_vector(1000)
+    //     .await
+    //     .expect("Failed to enable rotation vector");
+    // // bno085.enable_activity_recognition().await.expect("failed to initiate activity type");
+    // bno085
+    //     .enable_significant_motion_wake()
+    //     .await
+    //     .expect("failed to enable shake detection");
 
-    spawner
-        .spawn(bno085::imu_task(bno085, IMU_REPORTS.sender()).expect("failed to spawn imu task"));
+    // spawner
+    //     .spawn(bno085::imu_task(bno085, IMU_REPORTS.sender()).expect("failed to spawn imu task"));
 
-    spawner.spawn(bno085::ui_task(IMU_REPORTS.receiver()).expect("failed to spawn imu task"));
+    // spawner.spawn(bno085::ui_task(IMU_REPORTS.receiver()).expect("failed to spawn imu task"));
 
     // info!("entering loop");
 
@@ -246,7 +246,7 @@ pub async fn startup(spawner: Spawner) {
 
     let i2c_for_rtc = i2c::I2cDevice::new(i2c0_bus);
     match crate::rtc::Pcf8523::new(i2c_for_rtc).await {
-        Ok(mut r) => { r.set_countdown_minutes(15).await.ok(); }
+        Ok(rtc) => crate::rtc::init(rtc).await,        // register; do NOT arm here
         Err(e) => defmt::error!("RTC init failed (I2C): {:?}", e),
     }
     let rtc_int = embassy_rp::gpio::Input::new(p.PIN_23, embassy_rp::gpio::Pull::Up);

@@ -38,6 +38,81 @@
 
 use embedded_hal_async::i2c::I2c;
 
+// ---------------------------------------------------------------------------
+// Parked instance + free-function API
+// ---------------------------------------------------------------------------
+//
+// `modem_task` needs to re-arm the countdown at the end of every cycle ("wake me
+// in N minutes", counted from now) rather than free-run a fixed pulse from
+// startup. Rather than thread the `Pcf8523` through `initiate_modem` and both
+// `modem_task` spawn sites, it lives in a static -- the same pattern as
+// `power::RTC_INT` and the old `psm` primitives.
+//
+// The concrete bus type is fixed here (I2C0, the RTC's bus), which is the price
+// of a static: it cannot stay generic. If the RTC ever moves buses, change this
+// alias and `init`'s argument to match.
+
+use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
+use embassy_rp::i2c::{Async, I2c as RpI2c};
+use embassy_rp::peripherals::I2C0;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+
+/// The RTC's concrete bus device. RTC shares I2C0 with the board's other I2C
+/// devices (the BNO085 is on I2C1).
+pub type RtcI2c = I2cDevice<'static, CriticalSectionRawMutex, RpI2c<'static, I2C0, Async>>;
+
+static RTC: Mutex<CriticalSectionRawMutex, Option<Pcf8523<RtcI2c>>> = Mutex::new(None);
+
+/// Hand the initialised RTC to the module. Call once from `startup`, after
+/// [`Pcf8523::new`]. The countdown is left stopped -- `modem_task` arms it
+/// per-cycle via [`arm_wake_minutes`].
+pub async fn init(rtc: Pcf8523<RtcI2c>) {
+    *RTC.lock().await = Some(rtc);
+}
+
+/// Clear the last wake's interrupt flag, then arm the next wake for `minutes`,
+/// counted from now. Call at the end of each cycle, just before sleeping.
+///
+/// The clear matters: after a countdown fires, `CTBF` is latched and INT stays
+/// asserted. Re-arming without clearing would leave the pending flag able to
+/// re-trigger the wake immediately. Doing both here keeps the one ordering
+/// constraint in one place.
+///
+/// Errors are logged and swallowed: an I2C hiccup arming the RTC should not panic
+/// the tracker. The consequence of a missed arm is a missed wake, which the
+/// deferred hardware watchdog (RTC RSTn, or the RP2350 WDT) is the backstop for.
+pub async fn arm_wake_minutes(minutes: u8) {
+    let mut guard = RTC.lock().await;
+    let Some(rtc) = guard.as_mut() else {
+        defmt::error!("rtc::arm_wake_minutes before rtc::init");
+        return;
+    };
+    if let Err(e) = rtc.clear_flag().await {
+        defmt::error!("RTC clear_flag failed: {:?}", e);
+    }
+    if let Err(e) = rtc.set_countdown_minutes(minutes).await {
+        defmt::error!("RTC arm ({} min) failed: {:?}", minutes, e);
+    }
+}
+
+/// Stop the countdown entirely -- DEEP_REST, where only the BNO085 motion INT can
+/// wake the host. Clears the pending flag first, same reasoning as
+/// [`arm_wake_minutes`].
+pub async fn disarm_wake() {
+    let mut guard = RTC.lock().await;
+    let Some(rtc) = guard.as_mut() else {
+        defmt::error!("rtc::disarm_wake before rtc::init");
+        return;
+    };
+    if let Err(e) = rtc.clear_flag().await {
+        defmt::error!("RTC clear_flag failed: {:?}", e);
+    }
+    if let Err(e) = rtc.stop_countdown().await {
+        defmt::error!("RTC disarm failed: {:?}", e);
+    }
+}
+
 /// 7-bit I2C address (fixed).
 pub const ADDR: u8 = 0x68;
 
