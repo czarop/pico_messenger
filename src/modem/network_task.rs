@@ -50,6 +50,7 @@ pub async fn network_task(
     let mut try_disconnect = false;
     let mut socket_id = 0;
     let mut connect_failures: u8 = 0;
+    let mut registered = true;
     'outer: loop {
         if !matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_disconnect {
             defmt::info!("disconnecting");
@@ -423,12 +424,13 @@ pub async fn network_task(
                             break;
                     }
                     ModemUrc::Cereg(body) => {
+                        registered = cereg_registered(body.as_str());
                         // Network registration changed. Only act on it as a
                         // recovery signal: if we're sitting in Down (e.g. after a
                         // connect dropped mid-handshake) and the radio has
                         // re-registered, re-drive bring-up. During healthy
                         // operation a routine +CEREG must not disturb the stack.
-                        if cereg_registered(body.as_str())
+                        if registered
                             && matches!(
                                 state_watcher.try_get(),
                                 Some(state::MqttStackState::Down)
@@ -465,9 +467,7 @@ pub async fn network_task(
                         warn!("Network start called");
                         // The modem auto-activates context 5 once NB-IoT registration
                         // completes, which can take well over a minute on first attach.
-                        // Poll rather than probe once, so we proceed the moment the
-                        // context is up instead of waiting for the next orchestration tick.
-                        // ~40 * 3s = 120s, matching modem_task's READY_TIMEOUT.
+                        // Poll rather than probe once
                         let mut seeded = false;
                         for _ in 0..40 {
                             COMMAND_CHANNEL
@@ -476,29 +476,15 @@ pub async fn network_task(
                                 ))
                                 .await;
                             match communication::PDP_ADDRESS_RESULT.wait().await {
-                                Ok(true) => {
+                                Ok(true) if registered => {
                                     info!("PDP context active - seeding IpUp");
-                                    // // Log the PSM timers the network actually GRANTED. Requested != granted:
-                                    // // AT+CPSMS only asks, and the network can hand back something else entirely.
-                                    // // The granted T3412 is the modem's self-wake period and therefore the only
-                                    // // available RP2350 dormant-wake clock -- so this number decides the whole
-                                    // // power architecture. Query it rather than waiting for the +CEREG URC, which
-                                    // // fires only on a state change and is routinely missed.
-                                    // communication::CEREG_RESULT.reset();
-                                    // COMMAND_CHANNEL.send(ModemCommand::CeregQuery(cereg::CeregQuery)).await;
-                                    // match communication::CEREG_RESULT.wait().await {
-                                    //     Ok(s) => defmt::info!(
-                                    //         "PSM GRANTED: stat={} active_time={}s periodic_TAU={}s ({} min)",
-                                    //         s.stat,
-                                    //         s.active_time_secs,
-                                    //         s.periodic_tau_secs,
-                                    //         s.periodic_tau_secs.map(|t| t / 60)
-                                    //     ),
-                                    //     Err(e) => defmt::warn!("CEREG? query failed: {:?}", e),
-                                    // }
                                     state_sender.send(state::MqttStackState::IpUp);
                                     seeded = true;
                                     break;
+                                }
+                                Ok(true) => {
+                                    // PDP address present but stat=2 (searching).
+                                    info!("PDP active but not registered (searching) - waiting");
                                 }
                                 Ok(false) => {
                                     info!("PDP context not active yet, polling...");
