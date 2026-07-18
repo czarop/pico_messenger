@@ -74,6 +74,55 @@ pub async fn init(rtc_int: Input<'static>) {
 /// `rtc_int` (configured `Pull::Up`) must have been handed over via [`init`]
 /// before the first call. Panics if not -- sleeping with no wake source armed
 /// would be an unrecoverable hang, so failing loudly is correct.
+/// Sleep for `target_secs` of real time, to within about a second.
+///
+/// A single `arm` cannot be trusted for this: Timer B's source divider free-runs,
+/// so a request of N ticks fires anywhere in `(N-1, N]` ticks -- up to a minute
+/// early on the 1/60 Hz source. This closes the loop instead:
+///
+/// 1. read the RTC calendar (a 1 Hz counter that survives DORMANT),
+/// 2. arm SHORT of what remains, so we can never overshoot,
+/// 3. sleep,
+/// 4. on wake, measure what actually elapsed and repeat with the remainder.
+///
+/// The coarse arm gets us to within a minute, the fine arm to within a second, so
+/// this normally costs two DORMANT cycles rather than one. Errors do not
+/// accumulate across cycles because every step is measured against real time.
+///
+/// Falls back to a single plain sleep if the RTC calendar is unreadable, so a
+/// clock fault degrades the cadence rather than hanging the device.
+pub async fn sleep_for_secs(target_secs: u32) {
+    let Some(start) = crate::rtc::now_secs_of_day().await else {
+        defmt::error!("sleep_for_secs: RTC calendar unreadable — single coarse sleep");
+        let _ = crate::rtc::arm_wake_secs(target_secs).await;
+        sleep_dormant().await;
+        return;
+    };
+
+    loop {
+        let elapsed = match crate::rtc::now_secs_of_day().await {
+            Some(now) => crate::rtc::elapsed_secs(start, now),
+            None => {
+                defmt::error!("sleep_for_secs: RTC read failed mid-sleep — giving up early");
+                return;
+            }
+        };
+
+        if elapsed >= target_secs {
+            return;
+        }
+        let remaining = target_secs - elapsed;
+
+        // Arm short of the remainder; 0 means nothing could be armed.
+        if crate::rtc::arm_wake_secs(remaining).await == 0 {
+            defmt::error!("sleep_for_secs: could not arm wake — aborting sleep");
+            return;
+        }
+
+        sleep_dormant().await;
+    }
+}
+
 pub async fn sleep_dormant() {
     let mut guard = RTC_INT.lock().await;
     let rtc_int = guard
