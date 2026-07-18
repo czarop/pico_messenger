@@ -26,7 +26,7 @@ runc:
     DEV_BOARD=challenger cargo run --release --bin pico_messenger
 
 runm:
-    cargo run --release --bin pico_messenger --features mock_modem
+    cargo run --release --bin pico_messenger --features mock_modem,mock_host_sleep
 
 provision:
     cargo run --release --bin provision

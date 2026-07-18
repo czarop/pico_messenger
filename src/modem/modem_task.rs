@@ -132,6 +132,11 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
         // Concurrent bring-up: run GNSS two-fix acquisition and MQTT
         // ready+subscribe at the same time, on this one task. `join` completes
         // only when BOTH have finished; the timeout bounds the whole thing.
+        // Sleep-regime selector, hoisted here and defaulted conservatively: if
+        // we can't get a fix this cycle we stay on the RTC cadence rather than
+        // deep-resting blind. Set from the two-fix speed in the Ok arm below.
+        let mut is_moving = true;
+
         let outcome = with_timeout(
             READY_TIMEOUT,
             join(
@@ -153,8 +158,9 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
                 // Both ready: build the payload from the fix pair and publish.
                 let speed = fix_pair.speed_mps();
                 // is_moving: a measured non-zero speed means moving; Some(0.0) is
-                // a confirmed-stationary reading; None means unmeasurable.
-                let is_moving = matches!(speed, Some(s) if s > 0.0);
+                // a confirmed-stationary reading; None means unmeasurable. Writes
+                // the hoisted selector used at the sleep decision below.
+                is_moving = matches!(speed, Some(s) if s > 0.0);
                 warn!("heading placeholder (None) — wire BNO085 next");
  
                 let payload = LocationPayload::from_gnss(fix_pair.end, speed, None, is_moving);
@@ -218,24 +224,43 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
         // just skip sleeping this cycle and retry.
         match crate::modem::psm::enter_psm().await {
             Ok(()) => {
-                // Arm the wake fresh, counting from NOW (cycle done, about to
-                // sleep) rather than free-running from startup. This makes the
-                // cadence deterministic -- cycle-end to next-wake -- instead of
-                // letting a fixed pulse drift against the cycle phase. It also
-                // clears the previous wake's latched INT flag, without which the
-                // pending flag could immediately re-trigger. Per-cycle arming is
-                // what will later let each regime pick its own interval
-                // (ACTIVE=15, STATIONARY_PENDING=10, DEEP_REST=disarm).
-                crate::rtc::arm_wake_minutes(SLEEP_MINUTES).await;
+                // Sleep regime selector. Real rule: a stationary device (no
+                // measured motion between the two fixes) deep-rests on BNO085
+                // significant motion; a moving device stays on the RTC cadence.
+                //
+                // FORCE_STATIONARY is a TEMP test override — the mock GNSS always
+                // reports moving, so without it the deep-rest path is never taken
+                // in the mock. Set to `false` for production behaviour.
+                const FORCE_STATIONARY: bool = true;
+                let stationary = FORCE_STATIONARY || !is_moving;
 
-                // Host into DORMANT until the RTC INT fires. The RTC countdown is
-                // the master cadence now (the POWMAN alarm can't wake dormant; the
-                // modem's TAU is floored by the network at 4h). Under
-                // mock_host_sleep this waits on the real INT edge instead of
-                // dormanting, keeping the probe attached.
-                crate::power::sleep_dormant().await;
+                if stationary {
+                    // Deep rest: disarm the RTC so nothing but significant motion
+                    // wakes us, hand off to imu_task, and park until it reports
+                    // the wake. embassy Signals latch, so reset first to drop any
+                    // stale wake from a previous cycle before arming.
+                    use crate::sensors::bno085::bno085::{ENTER_SLEEP, MOTION_WOKE};
 
-                // Woken. Bring the modem back before the next cycle's AT traffic.
+                    crate::rtc::disarm_wake().await;
+                    MOTION_WOKE.reset();
+                    ENTER_SLEEP.signal(());
+                    info!("deep rest: RTC disarmed, armed BNO085 motion wake");
+
+                    MOTION_WOKE.wait().await;
+                    info!("deep rest: motion woke us");
+                } else {
+                    // Normal cadence: the RTC countdown is the master clock. Arm
+                    // fresh, counting from NOW (deterministic cycle-end to
+                    // next-wake, and clears the previous wake's latched INT flag),
+                    // then DORMANT until the RTC INT fires. Under mock_host_sleep
+                    // this waits on the real INT edge instead, keeping the probe
+                    // attached.
+                    crate::rtc::arm_wake_minutes(SLEEP_MINUTES).await;
+                    crate::power::sleep_dormant().await;
+                }
+
+                // Woken (either path). Bring the modem back before the next
+                // cycle's AT traffic.
                 if let Err(e) = crate::modem::psm::exit_psm().await {
                     error!(
                         "exit_psm failed: {:?} — continuing; next cmd may re-wake via UART",
