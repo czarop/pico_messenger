@@ -272,8 +272,7 @@ pub async fn startup(spawner: Spawner) {
         crate::modem::setup::initiate_mock_modem(spawner);
     }
 
-    // embassy_time::Timer::after(embassy_time::Duration::from_secs(15)).await;
-    // ENTER_SLEEP.signal(());
+    
 
     loop{
         embassy_time::Timer::after(embassy_time::Duration::from_secs(15)).await;

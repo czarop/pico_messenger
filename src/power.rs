@@ -91,6 +91,47 @@ pub async fn init(rtc_int: Input<'static>) {
 ///
 /// Falls back to a single plain sleep if the RTC calendar is unreadable, so a
 /// clock fault degrades the cadence rather than hanging the device.
+/// Wait for the RTC INT falling edge WITHOUT dormanting. Mock/test use, and for
+/// racing the RTC against another wake source while clocks are up.
+pub async fn wait_rtc_int() {
+    let mut guard = RTC_INT.lock().await;
+    let rtc_int = guard
+        .as_mut()
+        .expect("power::wait_rtc_int before power::init");
+    rtc_int.wait_for_falling_edge().await;
+}
+
+/// Run `f` with the RTC INT pad armed as a dormant wake source.
+///
+/// DORMANT halts all clocks and is woken by ANY armed pad, but every guard must
+/// be alive across the single `dormant_sleep()` call — so a multi-source sleep
+/// has to be assembled in one place. This lets the task that owns the other pad
+/// (currently `imu_task`, which owns the BNO085 HINT line) add the RTC to its own
+/// sleep: it arms its pad and calls `dormant_sleep()` inside `f`.
+///
+/// The guard disarms the pad on drop, after `f` returns.
+pub async fn with_rtc_dormant_wake<R>(f: impl FnOnce() -> R) -> R {
+    use embassy_rp::gpio::DormantWakeConfig;
+
+    let mut guard = RTC_INT.lock().await;
+    let rtc_int = guard
+        .as_mut()
+        .expect("power::with_rtc_dormant_wake before power::init");
+
+    // INT is open-drain active-low: wake on the falling edge. A level trigger
+    // would risk immediate re-wake while the flag is still asserted.
+    let cfg = DormantWakeConfig {
+        edge_high: false,
+        edge_low: true,
+        level_high: false,
+        level_low: false,
+    };
+    let dormant = rtc_int.dormant_wake(cfg);
+    let r = f();
+    drop(dormant);
+    r
+}
+
 pub async fn sleep_for_secs(target_secs: u32) {
     let Some(start) = crate::rtc::now_secs_of_day().await else {
         defmt::error!("sleep_for_secs: RTC calendar unreadable — single coarse sleep");

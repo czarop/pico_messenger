@@ -229,30 +229,44 @@
 //                 // FORCE_STATIONARY is a TEMP test override — the mock GNSS always
 //                 // reports moving, so without it the deep-rest path is never taken
 //                 // in the mock. Set to `false` for production behaviour.
-//                 const FORCE_STATIONARY: bool = false;
+//                 const FORCE_STATIONARY: bool = true;
 //                 let stationary = FORCE_STATIONARY || !is_moving;
+
+//                 use crate::sensors::bno085::bno085::{
+//                     ENTER_SLEEP, MOTION_WOKE, SENSOR_ASLEEP, SleepMode, WAKE_SENSOR,
+//                 };
 
 //                 if stationary {
 //                     // Disarm the RTC so only significant motion wakes us, hand
 //                     // off to imu_task, and park until it reports the wake.
 //                     // embassy Signals latch, so reset first to drop any stale
 //                     // wake from a previous cycle before arming.
-//                     use crate::sensors::bno085::bno085::{ENTER_SLEEP, MOTION_WOKE};
-
-//                     crate::rtc::disarm_wake().await; //working when commented out - not sure why yet
+//                     crate::rtc::disarm_wake().await;
 //                     MOTION_WOKE.reset();
-//                     ENTER_SLEEP.signal(());
+//                     ENTER_SLEEP.signal(SleepMode::DeepRest);
 //                     info!("deep rest: RTC disarmed, armed BNO085 motion wake");
 
 //                     MOTION_WOKE.wait().await;
 //                     info!("deep rest: motion woke us");
 //                 } else {
-//                     // Normal cadence: arm the RTC fresh, counting from NOW, then
-//                     // DORMANT until the RTC INT fires. Under mock_host_sleep this
-//                     // waits on the real INT edge, keeping the probe attached.
-//                     // crate::rtc::arm_wake_minutes(SLEEP_MINUTES).await;
-//                     // crate::power::sleep_dormant().await;
+//                     // Normal cadence. Sleep the BNO085 too: it is a separate chip
+//                     // and would otherwise run its fusion engine at full rate for
+//                     // the whole interval while the host is dormant, dominating the
+//                     // power budget. The host keeps the RTC as its own wake source.
+//                     //
+//                     // Wait for the ack before sleeping: dormanting while the sleep
+//                     // commands are still in flight would cut them off mid-sequence.
+//                     SENSOR_ASLEEP.reset();
+//                     ENTER_SLEEP.signal(SleepMode::SensorOnly);
+//                     SENSOR_ASLEEP.wait().await;
+
+//                     // Closed-loop sleep: measures against the RTC calendar and
+//                     // re-arms, so the cadence is accurate to ~1s and does not
+//                     // drift (a single arm fires anywhere in (N-1, N] minutes).
 //                     crate::power::sleep_for_secs(SLEEP_MINUTES as u32 * 60).await;
+
+//                     // Host is awake again — bring the sensor back up.
+//                     WAKE_SENSOR.signal(());
 //                 }
 
 //                 // Woken. Bring the modem back before the next cycle's AT traffic.
@@ -272,7 +286,6 @@
 //         }
 //     }
 // }
-
 use defmt::{error, info, warn};
 use embassy_futures::join::join;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Receiver};
@@ -382,6 +395,101 @@ async fn stop_gnss(rx: &mut Receiver<'_, CriticalSectionRawMutex, GNSSState, 2>)
     }
 }
 
+/// Full cycle length. Every location update is scheduled this far apart,
+/// regardless of what happens in between.
+const CYCLE_SECS: u32 = SLEEP_MINUTES as u32 * 60;
+
+/// How long a stationary device waits for motion before declaring itself parked
+/// and dropping into the indefinite motion-only sleep.
+const PROBE_SECS: u32 = 5 * 60;
+
+/// Message published once, just before entering indefinite sleep.
+const NOT_MOVING_MSG: &str = "Stopped! Will update when motion detected.";
+
+/// Bring MQTT up, publish a one-off text message, and tear the session down.
+///
+/// The normal cycle has already stopped MQTT and put the modem into PSM by the
+/// time the probe times out, so this has to re-establish the session. Used only
+/// for the "not moving" notice, which is rare by definition.
+async fn publish_status(
+    rx: &mut Receiver<'_, CriticalSectionRawMutex, MqttStackState, 3>,
+    topic: heapless::String<50>,
+    text: &str,
+) -> bool {
+    if let Err(e) = crate::modem::psm::exit_psm().await {
+        error!("status publish: exit_psm failed: {:?}", e);
+    }
+
+    communication::MQTT_COMMAND.signal(MqttCommand::Start);
+    if with_timeout(READY_TIMEOUT, ready_and_subscribe(rx, topic.clone()))
+        .await
+        .is_err()
+    {
+        warn!("status publish: MQTT not ready before timeout");
+        communication::MQTT_COMMAND.signal(MqttCommand::Stop);
+        return false;
+    }
+
+    let Ok(message) = heapless::String::<50>::try_from(text) else {
+        error!("status publish: message too long for String<50>");
+        communication::MQTT_COMMAND.signal(MqttCommand::Stop);
+        return false;
+    };
+
+    COMMAND_CHANNEL
+        .send(ModemCommand::MqttPublish(MqttPublish::new(topic, message)))
+        .await;
+
+    let ok = match PUBLISH_RESULT.wait().await {
+        Ok(_) => {
+            info!("status published: {}", text);
+            true
+        }
+        Err(e) => {
+            error!("status publish failed: {:?}", e);
+            false
+        }
+    };
+
+    communication::MQTT_COMMAND.signal(MqttCommand::Stop);
+    if let Err(e) = crate::modem::psm::enter_psm().await {
+        error!("status publish: enter_psm failed: {:?}", e);
+    }
+    ok
+}
+
+/// Seconds left in the current cycle, measured against the RTC calendar so the
+/// schedule holds regardless of how long the cycle's work took. Falls back to a
+/// full period if the clock is unreadable.
+async fn secs_left(cycle_start: Option<u32>) -> u32 {
+    match (cycle_start, crate::rtc::now_secs_of_day().await) {
+        (Some(a), Some(b)) => CYCLE_SECS.saturating_sub(crate::rtc::elapsed_secs(a, b)),
+        _ => CYCLE_SECS,
+    }
+}
+
+/// Sleep sensor and host for `secs`, host waking on the RTC.
+///
+/// The ack matters: dormanting while the BNO085 sleep commands are still in
+/// flight would cut them off mid-sequence.
+async fn rest_on_rtc(secs: u32) {
+    use crate::sensors::bno085::bno085::{ENTER_SLEEP, SENSOR_ASLEEP, SleepMode, WAKE_SENSOR};
+
+    if secs == 0 {
+        return;
+    }
+    SENSOR_ASLEEP.reset();
+    ENTER_SLEEP.signal(SleepMode::SensorOnly);
+    SENSOR_ASLEEP.wait().await;
+
+    // Closed-loop sleep: measures against the RTC calendar and re-arms, so the
+    // cadence is accurate to ~1s and does not drift (a single arm fires anywhere
+    // in (N-1, N] minutes).
+    crate::power::sleep_for_secs(secs).await;
+
+    WAKE_SENSOR.signal(());
+}
+
 #[embassy_executor::task]
 pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless::String<50>) -> ! {
     info!("modem task spawned");
@@ -389,6 +497,11 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
     let mut gnss_watcher = communication::GNSS_STATE.receiver().unwrap();
  
     loop {
+        // Anchor for the cadence. Every update is scheduled CYCLE_SECS after this
+        // point, so a probe or an early motion wake shortens the following sleep
+        // rather than shifting the schedule.
+        let cycle_start = crate::rtc::now_secs_of_day().await;
+
         // wait for modem ready before starting GNSS
         Timer::after(Duration::from_secs(12)).await;
  
@@ -498,50 +611,57 @@ pub async fn modem_task(gnss_interval: UpdateIntervalSecs, mqtt_topic: heapless:
         // just skip sleeping this cycle and retry.
         match crate::modem::psm::enter_psm().await {
             Ok(()) => {
-                // Sleep regime. A stationary device deep-rests on BNO085
-                // significant motion; a moving device stays on the RTC cadence.
-                //
-                // FORCE_STATIONARY is a TEMP test override — the mock GNSS always
-                // reports moving, so without it the deep-rest path is never taken
-                // in the mock. Set to `false` for production behaviour.
-                const FORCE_STATIONARY: bool = false;
-                let stationary = FORCE_STATIONARY || !is_moving;
-
                 use crate::sensors::bno085::bno085::{
-                    ENTER_SLEEP, MOTION_WOKE, SENSOR_ASLEEP, SleepMode, WAKE_SENSOR,
+                    ENTER_SLEEP, MOTION_WOKE, PROBE_RESULT, SleepMode, WakeSource,
                 };
 
-                if stationary {
-                    // Disarm the RTC so only significant motion wakes us, hand
-                    // off to imu_task, and park until it reports the wake.
-                    // embassy Signals latch, so reset first to drop any stale
-                    // wake from a previous cycle before arming.
-                    crate::rtc::disarm_wake().await;
-                    MOTION_WOKE.reset();
-                    ENTER_SLEEP.signal(SleepMode::DeepRest);
-                    info!("deep rest: RTC disarmed, armed BNO085 motion wake");
+                // FORCE_STATIONARY is a TEMP test override — the mock GNSS always
+                // reports moving, so without it the stationary path is never taken
+                // in the mock. Set to `false` for production behaviour.
+                const FORCE_STATIONARY: bool = true;
+                let stationary = FORCE_STATIONARY || !is_moving;
 
-                    MOTION_WOKE.wait().await;
-                    info!("deep rest: motion woke us");
+                if !stationary {
+                    // Moving: hold the cadence with sensor and host both down.
+                    let secs = secs_left(cycle_start).await;
+                    info!("moving: resting {} s to next update", secs);
+                    rest_on_rtc(secs).await;
                 } else {
-                    // Normal cadence. Sleep the BNO085 too: it is a separate chip
-                    // and would otherwise run its fusion engine at full rate for
-                    // the whole interval while the host is dormant, dominating the
-                    // power budget. The host keeps the RTC as its own wake source.
-                    //
-                    // Wait for the ack before sleeping: dormanting while the sleep
-                    // commands are still in flight would cut them off mid-sequence.
-                    SENSOR_ASLEEP.reset();
-                    ENTER_SLEEP.signal(SleepMode::SensorOnly);
-                    SENSOR_ASLEEP.wait().await;
+                    // Stationary: probe for motion for up to PROBE_SECS, never
+                    // running past the end of the cycle.
+                    let probe = core::cmp::min(PROBE_SECS, secs_left(cycle_start).await);
+                    info!("stationary: probing {} s for motion", probe);
 
-                    // Closed-loop sleep: measures against the RTC calendar and
-                    // re-arms, so the cadence is accurate to ~1s and does not
-                    // drift (a single arm fires anywhere in (N-1, N] minutes).
-                    crate::power::sleep_for_secs(SLEEP_MINUTES as u32 * 60).await;
+                    crate::rtc::arm_wake_secs(probe).await;
+                    PROBE_RESULT.reset();
+                    ENTER_SLEEP.signal(SleepMode::Probe);
 
-                    // Host is awake again — bring the sensor back up.
-                    WAKE_SENSOR.signal(());
+                    match PROBE_RESULT.wait().await {
+                        WakeSource::Motion => {
+                            // Moving again. Per spec: no immediate publish, just
+                            // serve out the rest of the cycle and carry on, so the
+                            // 15-minute schedule is preserved.
+                            let secs = secs_left(cycle_start).await;
+                            info!("probe: motion — resting {} s to next update", secs);
+                            rest_on_rtc(secs).await;
+                        }
+                        WakeSource::Rtc => {
+                            // Parked. Announce it, then sleep indefinitely with
+                            // motion as the only wake source.
+                            info!("probe: no motion — going to indefinite rest");
+                            publish_status(&mut mqtt_watcher, mqtt_topic.clone(), NOT_MOVING_MSG)
+                                .await;
+
+                            crate::rtc::disarm_wake().await;
+                            MOTION_WOKE.reset();
+                            ENTER_SLEEP.signal(SleepMode::DeepRest);
+
+                            MOTION_WOKE.wait().await;
+                            // Fall straight through to the next cycle, which
+                            // publishes immediately.
+                            info!("indefinite rest: motion woke us");
+                        }
+                    }
                 }
 
                 // Woken. Bring the modem back before the next cycle's AT traffic.

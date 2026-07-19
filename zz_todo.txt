@@ -1,13 +1,3 @@
-Its core responsibility is the wake → acquire → publish → sleep cycle. Sketch:
-On wake:
-
-Send MqttCommand::Start → watch MQTT_STATE until MqttReady
-Send GnssCommand::Start → watch GNSS_STATE until Fix
-Both ready → build payload, send MqttPublish via COMMAND_CHANNEL, await PUBLISH_RESULT
-Send MqttCommand::Stop, GnssCommand::Stop
-Sleep (POWMAN)
-
-Motion state machine running alongside:
 
 IMU reports arrive via Signal/Channel from imu_task
 Moving → short wake interval (e.g. 15 min)

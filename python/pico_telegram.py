@@ -7,7 +7,18 @@ PORT     = 8883
 CAFILE   = "/etc/mosquitto/certs/ca.crt"
 USER     = "czarop"
 PASSWORD = "lel22PBP23@01"
-TOPIC    = "pico/mqtt/gnss_update"
+
+# Topics, each with its own meaning — route on topic, never on payload shape.
+#   GNSS   : base64-encoded binary LocationPayload (23 bytes)
+#   STATUS : plain-text device notices, e.g. "device not moving"
+#   WILL   : broker-generated Last Will, published if the device drops without
+#            a clean disconnect. NOT the same as a deliberate status notice.
+TOPIC_GNSS   = "pico/mqtt/gnss_update"
+TOPIC_STATUS = "pico/mqtt/motion_status"
+TOPIC_WILL   = "pico/mqtt/status"
+
+# QoS 1 to match the device's AtLeastOnce publishes.
+SUBSCRIPTIONS = [(TOPIC_GNSS, 1), (TOPIC_STATUS, 1), (TOPIC_WILL, 1)]
 
 TG_TOKEN = "8699589319:AAFBpa8sBXzj8dXr5-_mvRwCb258LhMpsNY"
 TG_CHAT  = "8633586659"
@@ -18,8 +29,15 @@ LEAP_SECONDS = 18            # UNVERIFIED — see notes
 
 FLAG_MOVING, FLAG_SPEED, FLAG_HEADING = 0b001, 0b010, 0b100
 
+
 def tg(method, **data):
-    requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/{method}", data=data, timeout=10)
+    try:
+        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/{method}",
+                      data=data, timeout=10)
+    except Exception as e:
+        # A Telegram outage must not kill the bridge; the next message retries.
+        print("telegram send failed:", e)
+
 
 def decode(b64):
     raw = base64.b64decode(b64)
@@ -37,11 +55,8 @@ def decode(b64):
         "moving": bool(fl & FLAG_MOVING),
     }
 
-def on_connect(c, u, flags, rc, props=None):
-    print("connected rc", rc); c.subscribe(TOPIC)
 
-def on_message(c, u, msg):
-    payload = msg.payload.decode(errors="replace").strip()
+def handle_gnss(payload):
     if payload == "hello":          # current firmware test payload
         return
     try:
@@ -61,6 +76,52 @@ def on_message(c, u, msg):
     tg("sendLocation", chat_id=TG_CHAT, latitude=d["lat"], longitude=d["lon"])
     tg("sendMessage",  chat_id=TG_CHAT, text="\n".join(parts))
     print("sent:", d["lat"], d["lon"])
+
+
+def handle_status(payload, retained):
+    if not payload:
+        return
+    # Retained messages arrive on every reconnect, so mark them rather than
+    # letting an old notice look like a fresh event.
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
+    prefix = "😴" if "not moving" in payload.lower() else "ℹ️"
+    age = " (retained)" if retained else ""
+    tg("sendMessage", chat_id=TG_CHAT,
+       text=f"{prefix} {payload}{age}\n🕒 {stamp} UTC")
+    print("status:", payload, "retained" if retained else "")
+
+
+def handle_will(payload, retained):
+    if not payload:
+        return
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
+    age = " (retained)" if retained else ""
+    # The will fires on an UNCLEAN disconnect — the device dropped without
+    # saying goodbye, which during a long sleep may just mean keepalive expiry.
+    tg("sendMessage", chat_id=TG_CHAT,
+       text=f"⚠️ device link: {payload}{age}\n🕒 {stamp} UTC")
+    print("will:", payload, "retained" if retained else "")
+
+
+def on_connect(c, u, flags, rc, props=None):
+    print("connected rc", rc)
+    c.subscribe(SUBSCRIPTIONS)
+    print("subscribed:", [t for t, _ in SUBSCRIPTIONS])
+
+
+def on_message(c, u, msg):
+    payload = msg.payload.decode(errors="replace").strip()
+    retained = bool(getattr(msg, "retain", False))
+
+    if msg.topic == TOPIC_GNSS:
+        handle_gnss(payload)
+    elif msg.topic == TOPIC_STATUS:
+        handle_status(payload, retained)
+    elif msg.topic == TOPIC_WILL:
+        handle_will(payload, retained)
+    else:
+        print("unrouted topic:", msg.topic, repr(payload))
+
 
 cli = mqtt.Client(client_id="telegram-bridge", protocol=mqtt.MQTTv311)
 cli.username_pw_set(USER, PASSWORD)
