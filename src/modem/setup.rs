@@ -31,6 +31,8 @@ const WILL_MESSAGE: &str = "offline";
 const GNSS_INTERVAL: u32 = 60;
 const GNSS_TOPIC: &str = "pico/mqtt/gnss_update";
 
+const STATUS_TOPIC: &str = "pico/mqtt/motion_status";
+
 bind_interrupts!(struct Irqs {
     UART1_IRQ => BufferedInterruptHandler<UART1>;
 }); // interrupt ongoing tasks to add incoming messages to the buffer
@@ -134,7 +136,7 @@ pub fn initiate_modem(
         spawner.spawn(crate::modem::gnss::mock::gnss_mock_task(3).unwrap());
     }
 
-    spawner.spawn(crate::modem::modem_task::modem_task(GNSS_INTERVAL, heapless::String::try_from(GNSS_TOPIC).expect("topic error")).unwrap());
+    spawner.spawn(crate::modem::modem_task::modem_task(GNSS_INTERVAL, heapless::String::try_from(GNSS_TOPIC).expect("topic error"), heapless::String::try_from(STATUS_TOPIC).expect("topic error")).unwrap());
     // returns here - everything is owned by the spawned tasks
     defmt::info!("everything spawned");
 }
@@ -154,6 +156,7 @@ pub fn initiate_mock_modem(spawner: Spawner) {
         crate::modem::modem_task::modem_task(
             GNSS_INTERVAL,
             heapless::String::try_from(GNSS_TOPIC).expect("topic error"),
+            heapless::String::try_from(STATUS_TOPIC).expect("topic error")
         )
         .unwrap(),
     );

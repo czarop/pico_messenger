@@ -141,7 +141,7 @@ pub async fn startup(spawner: Spawner) {
     let mut bno085 = bno085::Imu::new(i2c_for_bno085, p.PIN_3, p.PIN_2).await;
 
     bno085
-        .enable_rotation_vector(1000)
+        .enable_rotation_vector(10000)
         .await
         .expect("Failed to enable rotation vector");
     // bno085.enable_activity_recognition().await.expect("failed to initiate activity type");
@@ -149,6 +149,11 @@ pub async fn startup(spawner: Spawner) {
         .enable_significant_motion_wake()
         .await
         .expect("failed to enable shake detection");
+
+    bno085
+        .enable_periodic_dcd_save()
+        .await
+        .expect("failed to enable periodic DCD save");
 
     spawner
         .spawn(bno085::imu_task(bno085, IMU_REPORTS.sender()).expect("failed to spawn imu task"));

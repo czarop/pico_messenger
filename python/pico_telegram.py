@@ -29,6 +29,35 @@ LEAP_SECONDS = 18            # UNVERIFIED — see notes
 
 FLAG_MOVING, FLAG_SPEED, FLAG_HEADING = 0b001, 0b010, 0b100
 
+# HDOP is dimensionless — it describes satellite GEOMETRY only, not measured
+# error. To turn it into metres you multiply by the UERE (User Equivalent Range
+# Error), the per-satellite ranging error of the receiver/conditions. ~5 m is a
+# reasonable nominal for consumer single-band GNSS.
+#
+#     horizontal error (1-sigma, metres) ~= HDOP x UERE
+#
+# So the figure reported is an ESTIMATE derived from geometry, not a measurement.
+# Real error is often worse near buildings (multipath), which HDOP cannot see.
+UERE_M = 5.0
+
+
+def accuracy_text(hdop):
+    """Human-readable horizontal accuracy estimate from HDOP."""
+    if hdop <= 0:
+        return "accuracy unknown"
+    # Standard DOP quality bands.
+    if hdop < 2:
+        rating = "excellent"
+    elif hdop < 5:
+        rating = "good"
+    elif hdop < 10:
+        rating = "moderate"
+    elif hdop < 20:
+        rating = "fair"
+    else:
+        rating = "poor"
+    return f"\u00b1{hdop * UERE_M:.0f} m ({rating})"
+
 
 def tg(method, **data):
     try:
@@ -66,16 +95,21 @@ def handle_gnss(payload):
     if d is None:
         print("non-payload:", repr(payload)); return
 
+    # No timestamp line: Telegram already stamps every message with its receive
+    # time, and that is within a second or two of the fix.
     parts = [f"📍 {d['lat']:.6f}, {d['lon']:.6f}",
-             f"🕒 {d['utc']:%Y-%m-%d %H:%M:%S} UTC",
-             f"⛰ {d['alt_m']} m   HDOP {d['hdop']}"]
+             f"⛰ {d['alt_m']} m",
+             f"🎯 {accuracy_text(d['hdop'])}"]
     if d["speed_mps"]  is not None: parts.append(f"🏃 {d['speed_mps']:.1f} m/s")
     if d["heading_deg"] is not None: parts.append(f"🧭 {d['heading_deg']:.0f}°")
     parts.append("moving" if d["moving"] else "stationary")
 
     tg("sendLocation", chat_id=TG_CHAT, latitude=d["lat"], longitude=d["lon"])
     tg("sendMessage",  chat_id=TG_CHAT, text="\n".join(parts))
-    print("sent:", d["lat"], d["lon"])
+    # Still logged (not sent) so the decoded GPS time can be compared against
+    # wall clock — the LEAP_SECONDS value above is unverified.
+    print(f"sent: {d['lat']:.6f},{d['lon']:.6f} "
+          f"fix_utc={d['utc']:%Y-%m-%d %H:%M:%S} hdop={d['hdop']} vdop={d['vdop']}")
 
 
 def handle_status(payload, retained):

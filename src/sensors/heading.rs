@@ -13,6 +13,21 @@ pub enum Heading {
 }
 
 impl Heading {
+    /// Compass bearing in whole degrees, 0..=359. Every variant carries it; this
+    /// just strips the cardinal-direction wrapper.
+    pub fn degrees(&self) -> u16 {
+        match *self {
+            Heading::North(d)
+            | Heading::NorthEast(d)
+            | Heading::East(d)
+            | Heading::SouthEast(d)
+            | Heading::South(d)
+            | Heading::SouthWest(d)
+            | Heading::West(d)
+            | Heading::NorthWest(d) => d,
+        }
+    }
+
     pub fn from_quaternion(quat: [f32; 4]) -> Self {
         let qx = quat[0];
         let qy = quat[1];

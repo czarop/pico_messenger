@@ -69,6 +69,11 @@ pub struct BNO085Async<SI> {
     error_list_received: bool,
     last_error_received: u8,
 
+    /// Sequence number for SH-2 command requests (report 0xF2). Separate from the
+    /// per-channel SHTP sequence numbers above: this one lets a command response
+    /// be matched to the command that caused it (SH-2 6.3.8).
+    command_seq: u8,
+
     last_chan_received: u8,
     last_exec_chan_rid: u8,
     last_command_chan_rid: u8,
@@ -107,6 +112,7 @@ impl<SI> BNO085Async<SI> {
             init_received: false,
             advert_received: false,
             error_list_received: false,
+            command_seq: 0,
             last_error_received: 0,
             last_chan_received: 0,
             last_exec_chan_rid: 0,
@@ -503,6 +509,52 @@ where
     ) -> Result<(), WrapperError<SE>> {
         self.enable_report(SENSOR_REPORTID_GYRO, millis_between_reports)
             .await
+    }
+
+    /// Send an SH-2 command request (report 0xF2) on the hub control channel.
+    ///
+    /// Layout per SH-2 6.4: [0xF2, seq, command, P0..P8].
+    async fn send_sh2_command(
+        &mut self,
+        command: u8,
+        params: [u8; 9],
+    ) -> Result<(), WrapperError<SE>> {
+        let seq = self.command_seq;
+        self.command_seq = self.command_seq.wrapping_add(1);
+
+        let mut body = [0u8; 12];
+        body[0] = SHUB_COMMAND_REQ;
+        body[1] = seq;
+        body[2] = command;
+        body[3..12].copy_from_slice(&params);
+
+        self.send_packet(CHANNEL_HUB_CONTROL, &body).await?;
+        Ok(())
+    }
+
+    /// Turn on automatic periodic saving of dynamic calibration data (SH-2 6.4.7).
+    ///
+    /// DCD is what MotionEngine learns at runtime; persisting it means a restart
+    /// resumes with a calibrated model instead of relearning from scratch, so the
+    /// rotation vector reaches usable accuracy far sooner after boot. It is NOT
+    /// needed to survive a sleep — executable SLEEP/ON preserves hub state — only
+    /// a power cycle or reset.
+    ///
+    /// There is no response to this command, so nothing to await.
+    pub async fn enable_periodic_dcd_save(&mut self) -> Result<(), WrapperError<SE>> {
+        let mut params = [0u8; 9];
+        params[0] = 0x00; // 0x00 = enable, 0x01 = disable
+        self.send_sh2_command(SH2_CMD_CONFIG_PERIODIC_DCD_SAVE, params)
+            .await
+    }
+
+    /// Ask the hub to save DCD immediately (SH-2 6.4.5).
+    ///
+    /// Fire-and-forget here: the hub replies with a Save DCD Response (0xF1) that
+    /// the normal message handling will consume. Periodic save is usually the
+    /// better option; this exists for forcing a save at a known-good moment.
+    pub async fn save_dcd(&mut self) -> Result<(), WrapperError<SE>> {
+        self.send_sh2_command(SH2_CMD_SAVE_DCD, [0u8; 9]).await
     }
 
     /// Enable a particular report
@@ -957,7 +1009,11 @@ const SHUB_REPORT_SET_FEATURE_CMD: u8 = 0xFD;
 // const SHUB_GET_FEATURE_REQ: u8 = 0xFE;
 // const SHUB_FORCE_SENSOR_FLUSH: u8 = 0xF0;
 const SHUB_COMMAND_RESP: u8 = 0xF1;
-//const SHUB_COMMAND_REQ:u8 =  0xF2;
+const SHUB_COMMAND_REQ: u8 = 0xF2;
+/// SH-2 6.4.5 — save dynamic calibration data now.
+const SH2_CMD_SAVE_DCD: u8 = 0x06;
+/// SH-2 6.4.7 — enable/disable automatic periodic DCD saving.
+const SH2_CMD_CONFIG_PERIODIC_DCD_SAVE: u8 = 0x09;
 
 // some mysterious responses we sometimes get:
 // 0x78, 0x7C

@@ -1,5 +1,5 @@
-0x18 = Accelerometer
 0x3c = display
 0x44 = temp sensor
 0x36 = battery sensor
 0x76 = altimeter
+0x68 = RTC

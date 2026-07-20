@@ -62,6 +62,7 @@ where
     /// sleep/ON window zeroes the stored report interval and the stream never
     /// comes back.
     pub async fn wait_for_motion_dormant(&mut self) {
+        clear_heading();
         self.inner
             .enable_significant_motion_wake()
             .await
@@ -85,6 +86,7 @@ where
     ///
     /// Same rule as the other sleeps — no Set Feature traffic in here.
     pub async fn wait_for_motion_or_rtc(&mut self) -> WakeSource {
+        clear_heading();
         self.inner
             .enable_significant_motion_wake()
             .await
@@ -138,6 +140,7 @@ where
     /// Same rule as the motion sleeps — no Set Feature traffic. Executable SLEEP
     /// preserves the sensor configuration and [`Self::wake_sensor`] restores it.
     pub async fn sleep_sensor(&mut self) {
+        clear_heading();
         self.inner.sleep().await.expect("failed to sleep BNO085");
         embassy_time::Timer::after_millis(50).await;
         self.inner.handle_all_messages(&mut Delay, 10).await;
@@ -153,6 +156,7 @@ where
     /// edge instead of DORMANTing, so clocks stay up and the probe stays
     /// attached. Same rule — no Set Feature traffic in here.
     pub async fn wait_for_motion(&mut self) {
+        clear_heading();
         self.inner
             .enable_significant_motion_wake()
             .await
@@ -201,6 +205,24 @@ where
 
     pub fn get_activity_type(self) -> super::bno08x::activity::Activity {
         self.inner.activity()
+    }
+
+    /// Turn on automatic periodic saving of dynamic calibration data.
+    ///
+    /// Call once after construction. Without it, MotionEngine relearns its
+    /// calibration from scratch on every power-up, so the rotation vector stays
+    /// above the accuracy threshold (and heading stays unpublished) for a while
+    /// after each boot. Not required to survive a sleep — only a restart.
+    pub async fn enable_periodic_dcd_save(&mut self) -> Result<(), ImuError<CommE>> {
+        self.inner
+            .enable_periodic_dcd_save()
+            .await
+            .map_err(ImuError::from)
+    }
+
+    /// Force an immediate DCD save. Rarely needed if periodic saving is on.
+    pub async fn save_dcd(&mut self) -> Result<(), ImuError<CommE>> {
+        self.inner.save_dcd().await.map_err(ImuError::from)
     }
 
     pub async fn enable_significant_motion_wake(&mut self) -> Result<(), ImuError<CommE>> {
@@ -256,6 +278,56 @@ impl<E: core::fmt::Debug> From<WrapperError<Error<E, ()>>> for ImuError<E> {
             _ => ImuError::Unresponsive,
         }
     }
+}
+
+/// Heading accuracy (degrees) beyond which a reading is not published. Matches
+/// `HeadingReading::is_reliable`. An uncalibrated BNO085 reports a large
+/// accuracy figure, and a confidently wrong bearing is worse than none.
+const HEADING_MAX_ACC_DEG: f32 = 6.0;
+
+/// Sentinel for "no usable heading".
+const HEADING_NONE: u32 = u32::MAX;
+
+/// Latest rotation-vector heading, packed as `deg << 16 | accuracy_decidegrees`.
+///
+/// A plain shared slot rather than a channel: `modem_task` wants the CURRENT
+/// bearing at publish time, not a stream, and must never block waiting for one.
+static LATEST_HEADING: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(HEADING_NONE);
+
+/// Record a heading reported by the sensor. Called from `imu_task` only.
+fn record_heading(reading: &HeadingReading) {
+    let deg = reading.heading.degrees() as u32;
+    let acc_ddeg = (reading.accuracy_deg * 10.0).clamp(0.0, u16::MAX as f32) as u32;
+    LATEST_HEADING.store(
+        (deg << 16) | acc_ddeg,
+        core::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Invalidate the stored heading. Called whenever the sensor is put to sleep:
+/// the device may be moved or rotated while it is down, so anything held from
+/// before the sleep is not safe to publish afterwards.
+fn clear_heading() {
+    LATEST_HEADING.store(HEADING_NONE, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Current heading in degrees (0..=359), or `None` if there is no reading yet,
+/// the sensor is asleep, or the reading is not accurate enough to trust.
+///
+/// Feeds `LocationPayload::from_gnss`, which sets the heading-valid flag only
+/// when this is `Some`.
+pub fn latest_heading_deg() -> Option<f32> {
+    let v = LATEST_HEADING.load(core::sync::atomic::Ordering::Relaxed);
+    if v == HEADING_NONE {
+        return None;
+    }
+    let deg = (v >> 16) as u16;
+    let acc = (v & 0xFFFF) as f32 / 10.0;
+    if acc >= HEADING_MAX_ACC_DEG {
+        return None;
+    }
+    Some(deg as f32)
 }
 
 /// What ended a dual-source sleep — see [`Imu::wait_for_motion_or_rtc`].
@@ -318,6 +390,9 @@ pub async fn imu_task(
                 imu.inner.handle_one_message(&mut Delay, 10).await;
 
                 let report = ImuReport::from(imu.inner.get_last_update());
+                if let ImuReport::Heading(reading) = &report {
+                    record_heading(reading);
+                }
                 if !matches!(report, ImuReport::None) {
                     let _ = sender.try_send(report);
                 }

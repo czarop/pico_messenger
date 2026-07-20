@@ -20,7 +20,7 @@ impl Default for MqttConfig {
             connection_timeout: Some(70),
             protocol_timeout: Some(20),
             publish_retry: Some(10),
-            keep_alive_pub_msg: Some(60),
+            keep_alive_pub_msg: Some(240),
         }
     }
 }
