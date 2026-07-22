@@ -2,10 +2,11 @@
 //!
 //! `AT#MQTTPUB` caps the `<message>` field at 50 UTF-8 chars (verified against
 //! the ST87MXX AT command manual, §11.4). Raw binary cannot be sent through a
-//! UTF-8 field, so the packed struct is base64-encoded. 23 bytes -> 32 base64
-//! chars (padded), comfortably within the 50-char limit.
+//! UTF-8 field, so the packed struct is base64-encoded. 26 bytes -> 36 base64
+//! chars (padded), comfortably within the 50-char limit (the ceiling is 36
+//! bytes: 37 would encode to 52 chars and overflow).
 //!
-//! # Wire format (little-endian, fixed 23 bytes)
+//! # Wire format (little-endian, fixed 26 bytes)
 //!
 //! Broker-side decoder reads exactly these fields, in this order, LE:
 //!
@@ -20,8 +21,11 @@
 //! | 18     | heading      | u16  | decidegrees 0..3599 (bit2)       |
 //! | 20     | hdop         | u8   | hdop x 10                        |
 //! | 21     | vdop         | u8   | vdop x 10 (derived, see below)   |
-//! | 22     | flags        | u8   | bit0 is_moving, bit1 speed_valid,|
-//! |        |              |      | bit2 heading_valid               |
+//! | 22     | battery_soc  | u8   | percent 0..100 (bit4)            |
+//! | 23     | temperature  | i16  | degC x 10 (bit5)                 |
+//! | 25     | flags        | u8   | bit0 is_moving, bit1 speed_valid,|
+//! |        |              |      | bit2 heading_valid, bit3 charging|
+//! |        |              |      | bit4 battery_valid, bit5 temp_ok |
 //!
 //! `vdop` is NOT reported by the modem in AT format; it is derived as
 //! `sqrt(pdop^2 - hdop^2)` (the geometric decomposition of 3D DOP into its
@@ -37,10 +41,10 @@ use heapless::String;
 use crate::modem::gnss::urc::fix::GnssLocation;
 
 /// Fixed on-the-wire length of the packed payload, in bytes.
-pub const WIRE_LEN: usize = 23;
+pub const WIRE_LEN: usize = 26;
 
-/// base64 of [`WIRE_LEN`] bytes (padded): ceil(23 / 3) * 4 = 32 chars.
-pub const BASE64_LEN: usize = 32;
+/// base64 of [`WIRE_LEN`] bytes (padded): ceil(26 / 3) * 4 = 36 chars.
+pub const BASE64_LEN: usize = 36;
 
 /// Flag bit: asset is moving.
 pub const FLAG_IS_MOVING: u8 = 0b0000_0001;
@@ -48,6 +52,12 @@ pub const FLAG_IS_MOVING: u8 = 0b0000_0001;
 pub const FLAG_SPEED_VALID: u8 = 0b0000_0010;
 /// Flag bit: `heading` field holds valid data.
 pub const FLAG_HEADING_VALID: u8 = 0b0000_0100;
+/// Flag bit: battery is charging. Only meaningful with `FLAG_BATTERY_VALID`.
+pub const FLAG_CHARGING: u8 = 0b0000_1000;
+/// Flag bit: `battery_soc` holds valid data.
+pub const FLAG_BATTERY_VALID: u8 = 0b0001_0000;
+/// Flag bit: `temperature` holds valid data.
+pub const FLAG_TEMP_VALID: u8 = 0b0010_0000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LocationPayload {
@@ -69,6 +79,10 @@ pub struct LocationPayload {
     pub hdop: u8,
     /// Vertical DOP x 10 (derived from pdop/hdop, not modem-reported).
     pub vdop: u8,
+    /// Battery state of charge, percent. Valid only if `FLAG_BATTERY_VALID`.
+    pub battery_soc: u8,
+    /// Temperature, degC x 10. Valid only if `FLAG_TEMP_VALID`.
+    pub temperature: i16,
     /// Bitfield: see `FLAG_*` constants.
     pub flags: u8,
 }
@@ -82,11 +96,19 @@ impl LocationPayload {
     /// * `heading_deg` — heading in degrees from the BNO085. `None` if the IMU
     ///   reading is unavailable/uncalibrated; field is 0 and the valid bit clear.
     /// * `is_moving` — drives `FLAG_IS_MOVING`.
+    /// * `battery` — `(percent, charging)` from the fuel gauge. `None` if the
+    ///   meter could not be read; field is 0 and `FLAG_BATTERY_VALID` stays clear.
+    /// * `temperature_c10` — degC x 10. `None` if unread; field 0, bit clear.
+    ///
+    /// A clear validity bit means "no data", which is deliberately distinct from
+    /// a zero value — 0% battery and 0.0 degC are both legitimate readings.
     pub fn from_gnss(
         loc: GnssLocation,
         speed_mps: Option<f32>,
         heading_deg: Option<f32>,
         is_moving: bool,
+        battery: Option<(u8, bool)>,
+        temperature_c10: Option<i16>,
     ) -> Self {
         // vdop = sqrt(pdop^2 - hdop^2), guarded against pdop < hdop (which
         // would be a degenerate report). libm::sqrtf for accurate no_std math.
@@ -118,6 +140,25 @@ impl LocationPayload {
             _ => 0,
         };
 
+        let battery_soc = match battery {
+            Some((soc, charging)) => {
+                flags |= FLAG_BATTERY_VALID;
+                if charging {
+                    flags |= FLAG_CHARGING;
+                }
+                soc.min(100)
+            }
+            None => 0,
+        };
+
+        let temperature = match temperature_c10 {
+            Some(t) => {
+                flags |= FLAG_TEMP_VALID;
+                t
+            }
+            None => 0,
+        };
+
         Self {
             lat: (loc.position.latitude * 1_000_000.0) as i32,
             lon: (loc.position.longitude * 1_000_000.0) as i32,
@@ -128,6 +169,8 @@ impl LocationPayload {
             heading,
             hdop: (loc.accuracy.hdop * 10.0).clamp(0.0, u8::MAX as f32) as u8,
             vdop: (vdop_f * 10.0).clamp(0.0, u8::MAX as f32) as u8,
+            battery_soc,
+            temperature,
             flags,
         }
     }
@@ -145,7 +188,9 @@ impl LocationPayload {
         b[18..20].copy_from_slice(&self.heading.to_le_bytes());
         b[20] = self.hdop;
         b[21] = self.vdop;
-        b[22] = self.flags;
+        b[22] = self.battery_soc;
+        b[23..25].copy_from_slice(&self.temperature.to_le_bytes());
+        b[25] = self.flags;
         b
     }
 

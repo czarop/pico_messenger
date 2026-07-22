@@ -1,13 +1,12 @@
 use crate::display::screen::{self, StatusScreen};
 
-
 use crate::modem::communication::{COMMAND_CHANNEL, GNSS_COMMAND};
 use crate::modem::gnss::commands::init::GnssInit;
 use crate::modem::setup::initiate_modem;
 use crate::power;
-use crate::sensors::bno085::bno085::{self, ENTER_SLEEP};
+use crate::sensors::bno085::bno085;
 use crate::sensors::bno085::reports::ImuReport;
-use crate::sensors::{battery_meter, temp_sensor};
+use crate::sensors::{battery_meter, telemetry, temp_sensor};
 use crate::state::{EmbassyStorage, load_state};
 use core::fmt::Write;
 use core::str::FromStr;
@@ -37,7 +36,12 @@ bind_interrupts!(pub struct Irqs {
     POWMAN_IRQ_TIMER => embassy_rp::aon_timer::InterruptHandler;
 });
 
-
+/// Shared-bus I2C0 handle, as handed to the telemetry task.
+///
+/// Embassy tasks cannot be generic, so the concrete device type has to be named
+/// somewhere both this module and `sensors::telemetry` can see it.
+pub type TelemetryI2c =
+    i2c::I2cDevice<'static, CriticalSectionRawMutex, I2c<'static, I2C0, embassy_rp::i2c::Async>>;
 
 static STORAGE: StaticCell<EmbassyStorage> = StaticCell::new();
 static ALLOC: StaticCell<Allocation<EmbassyStorage>> = StaticCell::new();
@@ -50,10 +54,7 @@ static I2C1_BUS: StaticCell<
     Mutex<CriticalSectionRawMutex, I2c<'static, I2C1, embassy_rp::i2c::Async>>,
 > = StaticCell::new();
 
-// static IMU_COMMANDS: Channel<CriticalSectionRawMutex, ImuCommand, 4> = Channel::new();
 static IMU_REPORTS: Channel<CriticalSectionRawMutex, ImuReport, 4> = Channel::new();
-
-
 
 pub async fn startup(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
@@ -76,12 +77,6 @@ pub async fn startup(spawner: Spawner) {
         let mut file_system = fs.lock().await;
         load_state(&mut *file_system)
     };
-
-
-
-    
-
-
 
     let i2c0 = I2c::new_async(
         p.I2C0,
@@ -112,44 +107,40 @@ pub async fn startup(spawner: Spawner) {
         CriticalSectionRawMutex,
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
     > = i2c::I2cDevice::new(i2c0_bus);
-    let i2c_for_battery_monitor: i2c::I2cDevice<
-        '_,
-        CriticalSectionRawMutex,
-        I2c<'static, I2C0, embassy_rp::i2c::Async>,
-    > = i2c::I2cDevice::new(i2c0_bus);
-    let i2c_for_temp_sensor: i2c::I2cDevice<
-        '_,
-        CriticalSectionRawMutex,
-        I2c<'static, I2C0, embassy_rp::i2c::Async>,
-    > = i2c::I2cDevice::new(i2c0_bus);
+    let i2c_for_battery_monitor: TelemetryI2c = i2c::I2cDevice::new(i2c0_bus);
+    let i2c_for_temp_sensor: TelemetryI2c = i2c::I2cDevice::new(i2c0_bus);
     let mut i2c_for_pressure_sensor: i2c::I2cDevice<
         '_,
         CriticalSectionRawMutex,
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
     > = i2c::I2cDevice::new(i2c0_bus);
 
-    i2c_scan(&mut i2c_for_pressure_sensor).await;
+    
 
     // let mut display = screen::Display::new(i2c_for_display).await;
-    let mut temp_senor = temp_sensor::TempSensor::new(i2c_for_temp_sensor);
-    let mut max17048 = battery_meter::Max17048::new(i2c_for_battery_monitor);
+
     let my_altitude_known = 21.0;
-    let mut pressure_sensor =
-        crate::sensors::altimeter::Altimeter::new(i2c_for_pressure_sensor, Some(my_altitude_known))
-            .await
-            .expect("could not initiate pressure sensor");
+    // let mut pressure_sensor =
+    //     crate::sensors::altimeter::Altimeter::new(i2c_for_pressure_sensor, Some(my_altitude_known))
+    //         .await
+    //         .expect("could not initiate pressure sensor");
+
+    // ---- IMU ----
     let mut bno085 = bno085::Imu::new(i2c_for_bno085, p.PIN_3, p.PIN_2).await;
 
     bno085
-        .enable_rotation_vector(10000)
+        .enable_rotation_vector(1000)
         .await
         .expect("Failed to enable rotation vector");
-    // bno085.enable_activity_recognition().await.expect("failed to initiate activity type");
+
     bno085
         .enable_significant_motion_wake()
         .await
         .expect("failed to enable shake detection");
 
+    // Persist calibration across restarts. Without it MotionEngine relearns from
+    // scratch on every power-up, and heading stays above the accuracy threshold
+    // (so unpublished) for a while after each boot.
     bno085
         .enable_periodic_dcd_save()
         .await
@@ -158,114 +149,36 @@ pub async fn startup(spawner: Spawner) {
     spawner
         .spawn(bno085::imu_task(bno085, IMU_REPORTS.sender()).expect("failed to spawn imu task"));
 
-    spawner.spawn(bno085::ui_task(IMU_REPORTS.receiver()).expect("failed to spawn imu task"));
+    spawner.spawn(bno085::ui_task(IMU_REPORTS.receiver()).expect("failed to spawn ui task"));
 
-    
+    // ---- Battery / temperature telemetry ----
+    // The task owns both sensors and publishes into shared slots that modem_task
+    // reads at publish time. It only runs while the host is awake -- DORMANT halts
+    // it along with everything else.
+    let battery_monitor = battery_meter::Max17048::new(i2c_for_battery_monitor);
+    let temperature_sensor = temp_sensor::TempSensor::new(i2c_for_temp_sensor);
+    spawner.spawn(
+        telemetry::telemetry_task(battery_monitor, temperature_sensor)
+            .expect("failed to spawn telemetry task"),
+    );
 
-    // info!("entering loop");
-
-    // loop {
-    //     // ENTER_SLEEP.signal(());
-
-    //     let soc = match max17048.soc().await {
-    //         Ok(soc) => soc,
-    //         Err(e) => {
-    //             // error!("Failed to read state of charge: {:?}", e);
-    //             0
-    //         }
-    //     };
-
-    //     let is_charging = match max17048.charge_rate().await {
-    //         Ok(rate) => {
-    //             info!("Charge rate: {}%/hr", rate);
-    //             rate > 0.0
-    //         }
-    //         Err(e) => {
-    //             // error!("Failed to read charge rate: {:?}", e);
-    //             false
-    //         }
-    //     };
-
-    //     let (temp_reading, humidity_reading) = match temp_senor
-    //         .read_temperature(temp_sensor::TempSensorPowerMode::LPM3)
-    //         .await
-    //     {
-    //         Ok(r) => {
-    //             let mut temp: String<24> = String::new();
-    //             core::write!(temp, "Temp: {:.1}C", r.temperature).unwrap();
-    //             let mut humidity: String<24> = String::new();
-    //             core::write!(humidity, "Humidity: {:.1}%", r.humidity).unwrap();
-    //             (Some(temp), Some(humidity))
-    //         }
-    //         Err(e) => {
-    //             error!("{:?}", defmt::Debug2Format(&e));
-    //             let err_string: String<24> =
-    //                 String::from_str("Temp Senor Error").expect("error making error string");
-    //             (Some(err_string), None)
-    //         }
-    //     };
-    //     let battery_level = battery_meter::BatteryLevel::from_soc(soc, is_charging);
-
-    //     let altitude = match pressure_sensor.read_altitude().await {
-    //         Ok(alt) => {
-    //             let mut alt_str: String<24> = String::new();
-    //             core::write!(alt_str, "Alt: {:.1}m", alt).unwrap();
-    //             Some(alt_str)
-    //         }
-    //         Err(e) => {
-    //             error!("Failed to read altitude: {:?}", e);
-    //             None
-    //         }
-    //     };
-
-    //     let display_info = StatusScreen {
-    //         battery: battery_level,
-    //         message: [
-    //             temp_reading.clone(),
-    //             humidity_reading.clone(),
-    //             Some(
-    //                 heapless::String::<24>::from_str("Updated!")
-    //                     .expect("could not make heapless string"),
-    //             ),
-    //             altitude,
-    //             None,
-    //         ],
-    //     };
-    //     let _ = display.show_message(display_info).await;
-
-    //     embassy_time::Timer::after(embassy_time::Duration::from_secs(15)).await;
-
-    //     // let display_info = StatusScreen {
-    //     //     battery: battery_level,
-    //     //     message: [
-    //     //         temp_reading,
-    //     //         humidity_reading,
-    //     //         Some(
-    //     //             heapless::String::<24>::from_str("Shake to update")
-    //     //                 .expect("could not make heapless string"),
-    //     //         ),
-    //     //         None,
-    //     //         None,
-    //     //     ],
-    //     // };
-    //     // let _ = display.show_message(display_info).await;
-    // }
-
+    // ---- RTC ----
     let i2c_for_rtc = i2c::I2cDevice::new(i2c0_bus);
     match crate::rtc::Pcf8523::new(i2c_for_rtc).await {
-        Ok(rtc) => crate::rtc::init(rtc).await,        // register; do NOT arm here
+        Ok(rtc) => crate::rtc::init(rtc).await, // register; do NOT arm here
         Err(e) => defmt::error!("RTC init failed (I2C): {:?}", e),
     }
     let rtc_int = embassy_rp::gpio::Input::new(p.PIN_13, embassy_rp::gpio::Pull::Up);
     crate::power::init(rtc_int).await;
 
+    i2c_scan(&mut i2c_for_pressure_sensor).await;
 
-
+    // ---- Modem ----
     let gnss_bias = embassy_rp::gpio::Output::new(p.PIN_11, embassy_rp::gpio::Level::High);
     let wake_pin = embassy_rp::gpio::Output::new(p.PIN_10, embassy_rp::gpio::Level::High);
     let tx_pin: embassy_rp::Peri<'static, embassy_rp::peripherals::PIN_4> = p.PIN_4;
     let rx_pin: embassy_rp::Peri<'static, embassy_rp::peripherals::PIN_5> = p.PIN_5;
-    let uart: embassy_rp::Peri<'static, embassy_rp::peripherals::UART1>  = p.UART1;
+    let uart: embassy_rp::Peri<'static, embassy_rp::peripherals::UART1> = p.UART1;
 
     #[cfg(not(feature = "mock_modem"))]
     initiate_modem(spawner, tx_pin, rx_pin, gnss_bias, wake_pin, uart);
@@ -277,11 +190,13 @@ pub async fn startup(spawner: Spawner) {
         crate::modem::setup::initiate_mock_modem(spawner);
     }
 
-    
-
-    loop{
+    // NOTE: do NOT signal ENTER_SLEEP from here. `modem_task` owns the sleep
+    // regime -- it decides between the RTC cadence, the motion probe and
+    // indefinite rest, and signals `imu_task` accordingly. A second signaller
+    // races it: ENTER_SLEEP holds one value and one waiter consumes it, so the
+    // two tasks end up fighting over who puts the sensor to sleep.
+    loop {
         embassy_time::Timer::after(embassy_time::Duration::from_secs(15)).await;
-        // ENTER_SLEEP.signal(());
     }
 }
 

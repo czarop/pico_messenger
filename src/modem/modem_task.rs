@@ -1,5 +1,4 @@
 use defmt::{error, info, warn};
-use embassy_futures::join::join;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Receiver};
 use embassy_time::{Duration, Timer, with_timeout};
 
@@ -170,26 +169,71 @@ async fn publish_status(
         return false;
     };
 
-    COMMAND_CHANNEL
-        .send(ModemCommand::MqttPublish(MqttPublish::new(topic, message)))
-        .await;
-
-    let ok = match PUBLISH_RESULT.wait().await {
-        Ok(_) => {
-            info!("status published: {}", text);
-            true
-        }
-        Err(e) => {
-            error!("status publish failed: {:?}", e);
-            false
-        }
-    };
+    // Retried: also sent immediately before an indefinite sleep.
+    let ok = publish_with_retry(topic, message).await;
+    if ok {
+        info!("status published: {}", text);
+    }
 
     communication::MQTT_COMMAND.signal(MqttCommand::Stop);
     if let Err(e) = crate::modem::psm::enter_psm().await {
         error!("status publish: enter_psm failed: {:?}", e);
     }
     ok
+}
+
+/// How long to wait for a publish to be acknowledged before treating it as
+/// failed. Without this a wedged modem hangs `modem_task` indefinitely: the
+/// result arrives on a Signal that would simply never be set.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Attempts per message before giving up. Each one costs radio time, so this is
+/// deliberately small -- the next cycle is only minutes away, and the payload is
+/// not buffered, so a dropped update is a gap rather than a corruption.
+const PUBLISH_ATTEMPTS: u8 = 3;
+
+/// Pause between attempts, so a momentarily unhappy link is not hammered.
+const PUBLISH_BACKOFF: Duration = Duration::from_secs(3);
+
+/// Send one message and wait for the broker acknowledgement.
+///
+/// Resets the result signal first: a late acknowledgement from a previous
+/// timed-out attempt would otherwise be read as this attempt succeeding.
+async fn publish_and_wait(topic: heapless::String<50>, message: heapless::String<50>) -> bool {
+    PUBLISH_RESULT.reset();
+    COMMAND_CHANNEL
+        .send(ModemCommand::MqttPublish(MqttPublish::new(topic, message)))
+        .await;
+
+    match with_timeout(PUBLISH_TIMEOUT, PUBLISH_RESULT.wait()).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            error!("publish rejected: {:?}", e);
+            false
+        }
+        Err(_) => {
+            error!("publish timed out after {} s", PUBLISH_TIMEOUT.as_secs());
+            false
+        }
+    }
+}
+
+/// [`publish_and_wait`] with bounded retries and a fixed backoff.
+async fn publish_with_retry(topic: heapless::String<50>, message: heapless::String<50>) -> bool {
+    for attempt in 1..=PUBLISH_ATTEMPTS {
+        if publish_and_wait(topic.clone(), message.clone()).await {
+            if attempt > 1 {
+                info!("published on attempt {}", attempt);
+            }
+            return true;
+        }
+        if attempt < PUBLISH_ATTEMPTS {
+            warn!("publish attempt {}/{} failed — retrying", attempt, PUBLISH_ATTEMPTS);
+            Timer::after(PUBLISH_BACKOFF).await;
+        }
+    }
+    error!("publish failed after {} attempts — message dropped", PUBLISH_ATTEMPTS);
+    false
 }
 
 /// Seconds left in the current cycle, measured against the RTC calendar so the
@@ -314,22 +358,24 @@ pub async fn modem_task(
                     warn!("no reliable heading this cycle — publishing without it");
                 }
 
-                let payload = LocationPayload::from_gnss(fix_pair.end, speed, heading, is_moving);
+                // Battery and temperature come from the telemetry task's shared
+                // slots — sampled while the host is awake, so at most a few
+                // seconds old here. `None` means unread or a failed read, and the
+                // payload leaves the corresponding validity bit clear.
+                let battery = crate::sensors::telemetry::battery();
+                let temperature = crate::sensors::telemetry::temperature_c10();
 
-                for _ in 1..10 {
-                    let publish = MqttPublish::new(mqtt_topic.clone(), payload.to_base64());
-                    COMMAND_CHANNEL.send(ModemCommand::MqttPublish(publish)).await;
+                let payload = LocationPayload::from_gnss(
+                    fix_pair.end,
+                    speed,
+                    heading,
+                    is_moving,
+                    battery,
+                    temperature,
+                );
 
-                    match PUBLISH_RESULT.wait().await {
-                        Ok(_) => {
-                            info!("Published successfully");
-                            break;
-                        }
-                        Err(e) => {
-                            error!("Publish failed: {:?}", e);
-                            warn!("implement retry loop");
-                        }
-                    }
+                if publish_with_retry(mqtt_topic.clone(), payload.to_base64()).await {
+                    info!("location published");
                 }
                 communication::MQTT_COMMAND.signal(MqttCommand::Stop);
             }
@@ -353,11 +399,8 @@ pub async fn modem_task(
                     let _ = text.push_str(NO_FIX_MSG);
                 }
 
-                let publish = MqttPublish::new(status_topic.clone(), text);
-                COMMAND_CHANNEL.send(ModemCommand::MqttPublish(publish)).await;
-                match PUBLISH_RESULT.wait().await {
-                    Ok(_) => info!("no-fix heartbeat published"),
-                    Err(e) => error!("no-fix heartbeat failed: {:?}", e),
+                if publish_and_wait(status_topic.clone(), text).await {
+                    info!("no-fix heartbeat published");
                 }
 
                 // Strike limit: say so now, while the session is still up. Doing
@@ -365,11 +408,11 @@ pub async fn modem_task(
                 // short message.
                 if strikes >= NO_FIX_STRIKES {
                     if let Ok(parked) = heapless::String::<50>::try_from(NO_FIX_PARKED_MSG) {
-                        let publish = MqttPublish::new(status_topic.clone(), parked);
-                        COMMAND_CHANNEL.send(ModemCommand::MqttPublish(publish)).await;
-                        match PUBLISH_RESULT.wait().await {
-                            Ok(_) => info!("parked notice published"),
-                            Err(e) => error!("parked notice failed: {:?}", e),
+                        // Retried: this is the last thing sent before an
+                        // indefinite sleep, so losing it means the backend has no
+                        // idea why the device went quiet.
+                        if publish_with_retry(status_topic.clone(), parked).await {
+                            info!("parked notice published");
                         }
                     }
                 }

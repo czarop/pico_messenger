@@ -4,4 +4,5 @@ pub mod heading;
 // pub mod magnetometer;
 pub mod altimeter;
 pub mod bno085;
+pub mod telemetry;
 pub mod temp_sensor;

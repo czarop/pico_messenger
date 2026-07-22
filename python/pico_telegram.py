@@ -23,11 +23,13 @@ SUBSCRIPTIONS = [(TOPIC_GNSS, 1), (TOPIC_STATUS, 1), (TOPIC_WILL, 1)]
 TG_TOKEN = "8699589319:AAFBpa8sBXzj8dXr5-_mvRwCb258LhMpsNY"
 TG_CHAT  = "8633586659"
 
-WIRE_LEN     = 23
+
+WIRE_LEN     = 26
 GPS_EPOCH    = 315964800      # 1980-01-06 in Unix seconds
 LEAP_SECONDS = 18            # UNVERIFIED — see notes
 
 FLAG_MOVING, FLAG_SPEED, FLAG_HEADING = 0b001, 0b010, 0b100
+FLAG_CHARGING, FLAG_BATTERY, FLAG_TEMP   = 0b1000, 0b1_0000, 0b10_0000
 
 # HDOP is dimensionless — it describes satellite GEOMETRY only, not measured
 # error. To turn it into metres you multiply by the UERE (User Equivalent Range
@@ -72,7 +74,8 @@ def decode(b64):
     raw = base64.b64decode(b64)
     if len(raw) != WIRE_LEN:
         return None
-    (lat, lon, wk, tow, alt, spd, hdg, hdop, vdop, fl) = struct.unpack('<iiHIhHHBBB', raw)
+    (lat, lon, wk, tow, alt, spd, hdg, hdop, vdop,
+     soc, temp, fl) = struct.unpack('<iiHIhHHBBBhB', raw)
     unix = GPS_EPOCH + wk * 604800 + tow / 1000.0 - LEAP_SECONDS
     return {
         "lat": lat / 1e6, "lon": lon / 1e6,
@@ -82,6 +85,11 @@ def decode(b64):
         "heading_deg": hdg / 10 if fl & FLAG_HEADING else None,
         "hdop": hdop / 10, "vdop": vdop / 10,
         "moving": bool(fl & FLAG_MOVING),
+        # A clear validity bit means "no reading", which is distinct from a zero
+        # value -- 0% battery and 0.0 C are both legitimate.
+        "battery_pct": soc if fl & FLAG_BATTERY else None,
+        "charging": bool(fl & FLAG_CHARGING) if fl & FLAG_BATTERY else None,
+        "temp_c": temp / 10 if fl & FLAG_TEMP else None,
     }
 
 
@@ -102,6 +110,9 @@ def handle_gnss(payload):
              f"🎯 {accuracy_text(d['hdop'])}"]
     if d["speed_mps"]  is not None: parts.append(f"🏃 {d['speed_mps']:.1f} m/s")
     if d["heading_deg"] is not None: parts.append(f"🧭 {d['heading_deg']:.0f}°")
+    if d["temp_c"]      is not None: parts.append(f"🌡 {d['temp_c']:.1f}°C")
+    if d["battery_pct"] is not None:
+        parts.append(f"🔋 {d['battery_pct']}%" + (" ⚡charging" if d["charging"] else ""))
     parts.append("moving" if d["moving"] else "stationary")
 
     tg("sendLocation", chat_id=TG_CHAT, latitude=d["lat"], longitude=d["lon"])
@@ -109,7 +120,8 @@ def handle_gnss(payload):
     # Still logged (not sent) so the decoded GPS time can be compared against
     # wall clock — the LEAP_SECONDS value above is unverified.
     print(f"sent: {d['lat']:.6f},{d['lon']:.6f} "
-          f"fix_utc={d['utc']:%Y-%m-%d %H:%M:%S} hdop={d['hdop']} vdop={d['vdop']}")
+          f"fix_utc={d['utc']:%Y-%m-%d %H:%M:%S} hdop={d['hdop']} vdop={d['vdop']} "
+          f"batt={d['battery_pct']} temp={d['temp_c']}")
 
 
 def handle_status(payload, retained):

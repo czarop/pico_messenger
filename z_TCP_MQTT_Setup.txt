@@ -275,3 +275,24 @@ openssl s_client -connect <EXTERNAL_IP>:8883 </dev/null 2>/dev/null \
 openssl verify -CAfile ca.crt server.crt
 openssl x509 -in ca.crt -outform der | sha256sum   # vs sha256sum ~/ca.der
 ```
+
+
+
+
+cd ~
+rm pico_telegram.py
+
+*upload pico_telegram.py
+
+sudo cp /opt/pico_telegram.py /opt/pico_telegram.py.bak
+sudo cp ~/pico_telegram.py /opt/pico_telegram.py
+sudo systemctl restart pico-telegram.service
+journalctl -u pico-telegram.service -f
+
+mosquitto_pub -h 34.148.211.3 -p 8883 --cafile /etc/mosquitto/certs/ca.crt \
+  -u czarop -P lel22PBP23@01 \
+  -t pico/mqtt/motion_status -m "device not moving"
+
+mosquitto_pub -h 34.148.211.3 -p 8883 --cafile /etc/mosquitto/certs/ca.crt \
+  -u czarop -P lel22PBP23@01 \
+  -t pico/mqtt/gnss_update -m "l/ARA/IM/v98CVgIBgMjAIwAaQMMElfVADc="

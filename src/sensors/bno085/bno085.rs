@@ -438,7 +438,7 @@ pub async fn ui_task(reports: Receiver<'static, CriticalSectionRawMutex, ImuRepo
         let report = reports.receive().await;
         match report {
             ImuReport::Heading(h) => {
-                info!("Heading: {}", h.heading)
+                // info!("Heading: {}", h.heading)
             }
             ImuReport::Activity(a) => {
                 info!("Activity: {:?}", a)
