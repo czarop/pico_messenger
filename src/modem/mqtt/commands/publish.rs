@@ -4,7 +4,11 @@ use heapless::String;
 use crate::modem::mqtt::commands::{MqttQos, MqttRetainFlag, OkResponse};
 
 #[derive(Clone, AtatCmd)]
-#[at_cmd("#MQTTPUB", OkResponse, timeout_ms = 20000)]
+// timeout_ms was 20000 and the modem's PUBACK on this network lands right at
+// ~20s, so the atat timeout fired ~130ms BEFORE the modem answered -- the publish
+// had actually succeeded (the broker echoed it back), but the firmware called it
+// a timeout and retried, producing duplicates. 60s gives real headroom.
+#[at_cmd("#MQTTPUB", OkResponse, timeout_ms = 60000)]
 pub struct MqttPublish {
     topic: String<50>,           // Publish topic, no wildcards
     message: String<50>,         // Payload, max 50 chars
