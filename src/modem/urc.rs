@@ -125,17 +125,32 @@ where
     use atat::nom::{
         bytes::complete::tag,
         character::complete::{line_ending, space0},
-        combinator::recognize,
+        combinator::{opt, recognize},
         sequence::tuple,
     };
 
     move |i| {
+        // Leading CRLF is OPTIONAL, and that is the whole point of this parser.
+        //
+        // `#SLEEP` is emitted right after `#ENERGY`, and whether it still has its
+        // leading CRLF depends on how the UART chunked the burst:
+        //
+        //   both in one read   -> `urc_keep_crlf` sees the following `\r\n#` and
+        //                         leaves the shared CRLF, so `#SLEEP` has one
+        //   split across reads -> `#ENERGY` is digested before `#SLEEP` arrives,
+        //                         cannot see what follows, and consumes the
+        //                         trailing CRLF -- so `#SLEEP` arrives bare
+        //
+        // Requiring the CRLF made this a race: the URC parsed on some cycles and
+        // was swallowed as echo on others, which stalled `enter_psm` until its
+        // 45s timeout and skipped the sleep entirely.
         let (i, (le, matched)) = tuple((
-            line_ending,
+            opt(line_ending),
             recognize(tuple((tag(token.clone()), space0, tag("\r\n")))),
         ))(i)?;
 
-        Ok((i, (trim_ws(matched), le.len() + matched.len())))
+        let le_len = le.map(|l| l.len()).unwrap_or(0);
+        Ok((i, (trim_ws(matched), le_len + matched.len())))
     }
 }
 

@@ -71,7 +71,7 @@ where
         embassy_time::Timer::after_millis(50).await;
         self.inner.handle_all_messages(&mut Delay, 10).await;
         self.inner.dormant_sleep_on_hint();
-        self.inner.wake().await.expect("failed to wake BNO085");
+        self.wake_tolerant().await;
     }
 
     // for testing - keeps clocks running so connected to probe
@@ -119,7 +119,7 @@ where
             self.inner.hint_low()
         };
 
-        self.inner.wake().await.expect("failed to wake BNO085");
+        self.wake_tolerant().await;
 
         if woke_on_motion {
             WakeSource::Motion
@@ -149,7 +149,49 @@ where
     /// Bring the BNO085 back from [`Self::sleep_sensor`]. Executable ON restores
     /// the previously configured reports on its own.
     pub async fn wake_sensor(&mut self) {
-        self.inner.wake().await.expect("failed to wake BNO085");
+        self.wake_tolerant().await;
+    }
+
+    /// Wake the hub, tolerating a NAK.
+    ///
+    /// A bare `.expect()` here panics the whole device on a transient bus error,
+    /// which is never the right trade: losing the IMU costs a heading, losing the
+    /// device costs everything.
+    ///
+    /// The NAK is expected occasionally. SHTP 2.6: HINT means "the hub has a cargo
+    /// to be READ". We wait on HINT and then immediately WRITE the executable-ON
+    /// packet, so the hub can be mid-transfer and refuse the address. Retrying a
+    /// few milliseconds later gives it time to settle.
+    async fn wake_tolerant(&mut self) {
+        const ATTEMPTS: u8 = 5;
+        const GAP_MS: u64 = 20;
+
+        for attempt in 1..=ATTEMPTS {
+            match self.inner.wake().await {
+                Ok(()) => {
+                    if attempt > 1 {
+                        defmt::info!("BNO085 woke on attempt {}", attempt);
+                    }
+                    return;
+                }
+                Err(e) => {
+                    if attempt == ATTEMPTS {
+                        // Carry on regardless: imu_task will simply report nothing
+                        // until the next sleep/wake cycle re-syncs it. Heading goes
+                        // absent (the accuracy gate already handles that) rather
+                        // than the device dying.
+                        defmt::error!(
+                            "BNO085 wake failed after {} attempts: {:?} — continuing without IMU",
+                            ATTEMPTS,
+                            defmt::Debug2Format(&e)
+                        );
+                    } else {
+                        defmt::warn!("BNO085 wake attempt {} failed — retrying", attempt);
+                        embassy_time::Timer::after_millis(GAP_MS).await;
+                    }
+                }
+            }
+        }
     }
 
     /// Test variant of [`Self::wait_for_motion_dormant`]: waits on the HINT
@@ -165,7 +207,7 @@ where
         embassy_time::Timer::after_millis(50).await;
         self.inner.handle_all_messages(&mut Delay, 10).await;
         self.inner.wait_for_hint().await;
-        self.inner.wake().await.expect("failed to wake BNO085");
+        self.wake_tolerant().await;
     }
 }
 

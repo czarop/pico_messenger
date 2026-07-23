@@ -141,10 +141,10 @@ pub async fn startup(spawner: Spawner) {
     // Persist calibration across restarts. Without it MotionEngine relearns from
     // scratch on every power-up, and heading stays above the accuracy threshold
     // (so unpublished) for a while after each boot.
-    bno085
-        .enable_periodic_dcd_save()
-        .await
-        .expect("failed to enable periodic DCD save");
+    // bno085
+    //     .enable_periodic_dcd_save()
+    //     .await
+    //     .expect("failed to enable periodic DCD save");
 
     spawner
         .spawn(bno085::imu_task(bno085, IMU_REPORTS.sender()).expect("failed to spawn imu task"));

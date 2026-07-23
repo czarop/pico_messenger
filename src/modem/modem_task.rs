@@ -1,5 +1,4 @@
 use defmt::{error, info, warn};
-use embassy_futures::join::join;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Receiver};
 use embassy_time::{Duration, Timer, with_timeout};
 
@@ -155,7 +154,26 @@ async fn publish_status(
 
     let ok = publish_once(topic, message, "status").await;
 
+    // Same ordering rule as the main cycle: Stop is fire-and-forget, so we must
+    // wait for the teardown to actually reach Down before asking the modem to
+    // sleep. Otherwise AT#SLEEPMODE races the outstanding AT#MQTTDISC — the modem
+    // enters PSM, then the late MQTTDISC arrives and immediately wakes it again
+    // (#WAKEUP), leaving it awake for the whole of what should be an indefinite
+    // motion-only rest.
     communication::MQTT_COMMAND.signal(MqttCommand::Stop);
+    if with_timeout(MQTT_DOWN_TIMEOUT, async {
+        loop {
+            if let MqttStackState::Down = rx.changed().await {
+                break;
+            }
+        }
+    })
+    .await
+    .is_err()
+    {
+        warn!("status publish: MQTT teardown did not reach Down — sleeping anyway");
+    }
+
     if let Err(e) = crate::modem::psm::enter_psm().await {
         error!("status publish: enter_psm failed: {:?}", e);
     }
@@ -171,6 +189,15 @@ async fn secs_left(cycle_start: Option<u32>) -> u32 {
         _ => CYCLE_SECS,
     }
 }
+
+/// Ceiling on waiting for the MQTT stack to reach `Down` before sleeping.
+///
+/// MUST be bounded. `network_task` only reports `Down` once its teardown
+/// completes, but if a connect is failing it sits in a rebuild loop (each attempt
+/// up to the 60s connection timeout) and may never pass through `Down` at all.
+/// An unbounded wait here parks `modem_task` permanently: no sleep, no further
+/// cycles, no logs — the device just goes quiet until reset.
+const MQTT_DOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Host-side ceiling on waiting for a publish result. Exceeds the `#MQTTPUB`
 /// command timeout (60s) so the modem's own timeout wins first and we read a real
@@ -336,7 +363,21 @@ pub async fn modem_task(
                     warn!("no reliable heading this cycle — publishing without it");
                 }
 
-                let payload = LocationPayload::from_gnss(fix_pair.end, speed, heading, is_moving);
+                // Battery and temperature from the telemetry task's shared slots
+                // — sampled while the host is awake, so at most a few seconds old
+                // here. `None` means unread or a failed read, and the payload
+                // leaves the corresponding validity bit clear.
+                let battery = crate::sensors::telemetry::battery();
+                let temperature = crate::sensors::telemetry::temperature_c10();
+
+                let payload = LocationPayload::from_gnss(
+                    fix_pair.end,
+                    speed,
+                    heading,
+                    is_moving,
+                    battery,
+                    temperature,
+                );
 
                 publish_once(mqtt_topic.clone(), payload.to_base64(), "location").await;
                 communication::MQTT_COMMAND.signal(MqttCommand::Stop);
@@ -400,10 +441,20 @@ pub async fn modem_task(
         // Down). MqttCommand::Stop is fire-and-forget, so without this the modem
         // would still hold a live MQTT session and open TCP socket when
         // AT#SLEEPMODE arrives — it answers OK and then does NOT sleep.
-        loop {
-            if let MqttStackState::Down = mqtt_watcher.changed().await {
-                break;
+        if with_timeout(MQTT_DOWN_TIMEOUT, async {
+            loop {
+                if let MqttStackState::Down = mqtt_watcher.changed().await {
+                    break;
+                }
             }
+        })
+        .await
+        .is_err()
+        {
+            // Almost always means the connect never succeeded, so there is no
+            // session to tear down and nothing to wait for. Press on to PSM: a
+            // modem left awake costs power, but hanging here costs everything.
+            warn!("MQTT stack did not reach Down in {} s — sleeping anyway", MQTT_DOWN_TIMEOUT.as_secs());
         }
 
         // Modem into PSM. enter_psm awaits the #SLEEP URC (~7-12s: the modem can't
