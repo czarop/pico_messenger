@@ -1,6 +1,6 @@
 use crate::modem::error::ModemError;
 use crate::modem::gnss_task::GnssCommand;
-use crate::modem::mqtt::commands::cereg;
+use crate::modem::mqtt::commands::{cereg, cesq};
 use crate::modem::mqtt::commands::clock::ClockReady;
 use crate::modem::mqtt::commands::socket::OpenSockets;
 use crate::modem::network_task::MqttCommand;
@@ -46,4 +46,17 @@ pub static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, ModemCommand, 4> = 
 pub static GNSS_COMMAND: Signal<CriticalSectionRawMutex, GnssCommand> = Signal::new();
 pub static MQTT_COMMAND: Signal<CriticalSectionRawMutex, MqttCommand> = Signal::new();
 
-// pub static CEREG_RESULT: Signal<CriticalSectionRawMutex, Result<cereg::CeregStatus, ModemError>> = Signal::new();
+/// Result of an `AT+CEREG?` query.
+///
+/// Needed because the registration flag maintained from `+CEREG` URCs goes stale
+/// inside `network_task`'s CGPADDR poll: that loop runs in the monitor's command
+/// branch and never reaches the URC arm, so a registration that completes DURING
+/// the poll is invisible to it. Querying is a command, so it works there.
+/// Result of an `AT+CESQ` signal-quality query. Diagnostic only: logged at
+/// bring-up so a marginal link (registered but too weak to hold a TLS MQTT
+/// session) is visible as a number rather than inferred from cell reselection.
+pub static CESQ_RESULT: Signal<CriticalSectionRawMutex, Result<cesq::CesqStatus, ModemError>> =
+    Signal::new();
+
+pub static CEREG_RESULT: Signal<CriticalSectionRawMutex, Result<cereg::CeregStatus, ModemError>> =
+    Signal::new();

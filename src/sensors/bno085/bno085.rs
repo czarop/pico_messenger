@@ -1,7 +1,7 @@
 use super::bno08x::Error;
 use super::bno08x::interface::i2c_async::I2cInterfaceAsync;
 use super::bno08x::wrapper_async::{BNO085Async, WrapperError};
-use defmt::info;
+use defmt::{error, info, warn};
 use embassy_rp::Peri;
 use embassy_rp::gpio::{Input, Output};
 use embassy_rp::peripherals::{PIN_2, PIN_3};
@@ -40,18 +40,98 @@ where
         let iface = I2cInterfaceAsync::default(i2c, hint);
         let mut inner = BNO085Async::new_with_interface(iface);
 
+        // Reset, then give the hub time to BOOT before touching the bus.
+        //
+        // `wait_for_hint()` is `wait_for_low()`, which returns IMMEDIATELY if HINT
+        // is already low -- and it often is here, either because the previous run
+        // left an unread cargo pending or because the line sits low while the part
+        // is in reset. Without a settle delay the very next thing we do is an I2C
+        // transaction against a chip that has not finished booting, which comes
+        // back NoAcknowledge. Intermittent, because it depends on the state the
+        // part happened to be left in.
+        const BOOT_SETTLE_MS: u64 = 120;
+
         rst_pin.set_low();
         embassy_time::Timer::after_millis(10).await;
         rst_pin.set_high();
+        embassy_time::Timer::after_millis(BOOT_SETTLE_MS).await;
 
         inner.wait_for_hint().await;
 
-        inner
-            .init(&mut embassy_time::Delay)
-            .await
-            .expect("BNO085 init failed");
-        info!("BNO085 init completed");
+        // Retry rather than panic. A NAK here is recoverable -- re-pulsing reset
+        // and trying again costs a few hundred milliseconds at boot, whereas the
+        // panic takes the whole device down before it has done anything at all.
+        const INIT_ATTEMPTS: u8 = 3;
+        let mut initialised = false;
+        for attempt in 1..=INIT_ATTEMPTS {
+            match inner.init(&mut embassy_time::Delay).await {
+                Ok(()) => {
+                    if attempt > 1 {
+                        info!("BNO085 init succeeded on attempt {}", attempt);
+                    }
+                    initialised = true;
+                    break;
+                }
+                Err(e) => {
+                    warn!(
+                        "BNO085 init attempt {} failed: {:?}",
+                        attempt,
+                        defmt::Debug2Format(&e)
+                    );
+                    if attempt < INIT_ATTEMPTS {
+                        rst_pin.set_low();
+                        embassy_time::Timer::after_millis(10).await;
+                        rst_pin.set_high();
+                        embassy_time::Timer::after_millis(BOOT_SETTLE_MS).await;
+                    }
+                }
+            }
+        }
+
+        if initialised {
+            info!("BNO085 init completed");
+        } else {
+            // Carry on without the IMU: no heading, and motion wake will not work,
+            // but the modem/GNSS side still functions and the device keeps
+            // reporting. Far better than refusing to boot.
+            error!("BNO085 init failed after {} attempts — continuing without IMU", INIT_ATTEMPTS);
+        }
+
         Self { inner }
+    }
+
+    /// Wake the hub, tolerating a NAK.
+    ///
+    /// A bare `.expect()` panics the whole device on a transient bus error, which
+    /// is never the right trade: losing the IMU costs a heading, losing the device
+    /// costs everything. Retrying a few milliseconds later gives the part time to
+    /// settle if it was mid-transfer.
+    async fn wake_tolerant(&mut self) {
+        const ATTEMPTS: u8 = 5;
+        const GAP_MS: u64 = 20;
+
+        for attempt in 1..=ATTEMPTS {
+            match self.inner.wake().await {
+                Ok(()) => {
+                    if attempt > 1 {
+                        info!("BNO085 woke on attempt {}", attempt);
+                    }
+                    return;
+                }
+                Err(e) => {
+                    if attempt == ATTEMPTS {
+                        error!(
+                            "BNO085 wake failed after {} attempts: {:?} — continuing without IMU",
+                            ATTEMPTS,
+                            defmt::Debug2Format(&e)
+                        );
+                    } else {
+                        warn!("BNO085 wake attempt {} failed — retrying", attempt);
+                        embassy_time::Timer::after_millis(GAP_MS).await;
+                    }
+                }
+            }
+        }
     }
 
     /// Sleep the BNO085 and DORMANT the whole board until significant motion.
@@ -150,48 +230,6 @@ where
     /// the previously configured reports on its own.
     pub async fn wake_sensor(&mut self) {
         self.wake_tolerant().await;
-    }
-
-    /// Wake the hub, tolerating a NAK.
-    ///
-    /// A bare `.expect()` here panics the whole device on a transient bus error,
-    /// which is never the right trade: losing the IMU costs a heading, losing the
-    /// device costs everything.
-    ///
-    /// The NAK is expected occasionally. SHTP 2.6: HINT means "the hub has a cargo
-    /// to be READ". We wait on HINT and then immediately WRITE the executable-ON
-    /// packet, so the hub can be mid-transfer and refuse the address. Retrying a
-    /// few milliseconds later gives it time to settle.
-    async fn wake_tolerant(&mut self) {
-        const ATTEMPTS: u8 = 5;
-        const GAP_MS: u64 = 20;
-
-        for attempt in 1..=ATTEMPTS {
-            match self.inner.wake().await {
-                Ok(()) => {
-                    if attempt > 1 {
-                        defmt::info!("BNO085 woke on attempt {}", attempt);
-                    }
-                    return;
-                }
-                Err(e) => {
-                    if attempt == ATTEMPTS {
-                        // Carry on regardless: imu_task will simply report nothing
-                        // until the next sleep/wake cycle re-syncs it. Heading goes
-                        // absent (the accuracy gate already handles that) rather
-                        // than the device dying.
-                        defmt::error!(
-                            "BNO085 wake failed after {} attempts: {:?} — continuing without IMU",
-                            ATTEMPTS,
-                            defmt::Debug2Format(&e)
-                        );
-                    } else {
-                        defmt::warn!("BNO085 wake attempt {} failed — retrying", attempt);
-                        embassy_time::Timer::after_millis(GAP_MS).await;
-                    }
-                }
-            }
-        }
     }
 
     /// Test variant of [`Self::wait_for_motion_dormant`]: waits on the HINT

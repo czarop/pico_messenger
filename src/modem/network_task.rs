@@ -6,7 +6,7 @@ use heapless::String;
 use super::setup::{URC_CAPACITY, URC_SUBSCRIBERS};
 use crate::modem::{command_task::{self, ModemCommand}, communication::{self, COMMAND_CHANNEL, MQTT_COMMAND, MQTT_STATE, SUBSCRIBE_RESULT, UNSUBSCRIBE_RESULT}, mqtt::{
         commands::{
-            cereg, clock::CclkQuery, config::MqttConfig, connect::{MqttConnect, MqttConnectStub, MqttDisconnect}, pdn::CgPaddrQuery, reset::ModemReset, socket::{SocketClose, SocketCreate, SocketQuery}, subscribe::{MqttSubscribe, MqttUnsubscribe},
+            cereg, cesq, clock::CclkQuery, config::MqttConfig, connect::{MqttConnect, MqttConnectStub, MqttDisconnect}, pdn::CgPaddrQuery, reset::ModemReset, socket::{SocketClose, SocketCreate, SocketQuery}, subscribe::{MqttSubscribe, MqttUnsubscribe},
         }, state, urc::ip_stack,
     }, urc::ModemUrc};
 
@@ -24,12 +24,30 @@ pub enum MqttCommand {
 fn cereg_registered(body: &str) -> bool {
     let s = body.trim();
     let s = s.strip_prefix("+CEREG:").map(|r| r.trim()).unwrap_or(s);
-    matches!(
-        s.split(',')
-            .next()
-            .and_then(|f| f.trim().trim_matches('"').parse::<u8>().ok()),
-        Some(1) | Some(5)
-    )
+
+    // TWO SHAPES, and getting this wrong silently wedges bring-up:
+    //
+    //   URC form   `+CEREG: <stat>,"<tac>",...`      -> stat is field 0
+    //   Read form  `+CEREG: <n>,<stat>,"<tac>",...`  -> stat is field 1
+    //
+    // The read form arrives here too: `+CEREG` is a URC token, so the response to
+    // AT+CEREG? gets consumed by the URC arm rather than by the command. Reading
+    // field 0 there yields <n> (the URC config mode, 4), which is never 1 or 5 --
+    // so the device decides it is unregistered and never brings MQTT up, no matter
+    // what the radio is actually doing.
+    //
+    // Discriminate on field 1: a bare number means the read form. A quoted TAC
+    // like "242E" cannot parse as a number, so the two can't be confused.
+    let mut fields = s.split(',');
+    let first = fields.next();
+    let second = fields.next();
+
+    let stat = match second.and_then(|f| f.trim().parse::<u8>().ok()) {
+        Some(stat) => Some(stat), // read form: field 1
+        None => first.and_then(|f| f.trim().trim_matches('"').parse::<u8>().ok()),
+    };
+
+    matches!(stat, Some(1) | Some(5))
 }
 
 #[embassy_executor::task]
@@ -72,15 +90,36 @@ pub async fn network_task(
                     MqttDisconnect {},
                 ))
                 .await;
-            let _ = communication::NETWORK_RESULT.wait().await;
+            let disconnected = communication::NETWORK_RESULT.wait().await;
 
-            // COMMAND_CHANNEL
-            //     .send(command_task::ModemCommand::SocketClose(SocketClose {
-            //         context_id: socket_info.context_id(),
-            //         socket_id,
-            //     }))
-            //     .await;
-            // let _ = communication::NETWORK_RESULT.wait().await;
+            // A SUCCESSFUL MQTTDISC frees the socket, so closing it again is
+            // redundant (and answers a harmless +CME ERROR: 2104, "invalid socket
+            // id"). A FAILED one does not -- and that is the case that poisons the
+            // next cycle.
+            //
+            // Seen on hardware: publish failed with 2215, MQTTDISC then got no
+            // answer at all and timed out after 20s, so the socket stayed open. The
+            // following cycle found it still listed, AT#SOCKETCLOSE returned 2104,
+            // and recovery escalated to AT#RESET=0 -- a full modem reboot costing
+            // ~50s, a wiped clock, and a burst of 2100/2106 errors. All from one
+            // unacknowledged disconnect.
+            //
+            // So: only force the close when the disconnect did not confirm.
+            if let Err(e) = disconnected {
+                defmt::warn!("MQTTDISC did not confirm ({:?}) - forcing socket close", e);
+                COMMAND_CHANNEL
+                    .send(command_task::ModemCommand::SocketClose(SocketClose {
+                        context_id: socket_info.context_id(),
+                        socket_id,
+                    }))
+                    .await;
+                match communication::NETWORK_RESULT.wait().await {
+                    Ok(()) => defmt::info!("socket closed after failed disconnect"),
+                    // 2104 (invalid socket id) here is fine: it means the socket
+                    // was already gone, which is the outcome we wanted anyway.
+                    Err(e) => defmt::warn!("forced socket close failed: {:?}", e),
+                }
+            }
 
             state_sender.send(state::MqttStackState::Down);
         }
@@ -475,8 +514,53 @@ pub async fn network_task(
                                     CgPaddrQuery::default(),
                                 ))
                                 .await;
-                            match communication::PDP_ADDRESS_RESULT.wait().await {
-                                Ok(true) if registered => {
+                            let pdp = communication::PDP_ADDRESS_RESULT.wait().await;
+
+                            // Ask the modem directly rather than trusting the flag
+                            // maintained from +CEREG URCs.
+                            //
+                            // This loop runs in the monitor's COMMAND branch, so it
+                            // never reaches the URC arm -- `registered` is frozen at
+                            // whatever it was when the poll started. A registration
+                            // that completes mid-poll is therefore invisible, and the
+                            // device sits out the entire window insisting it is still
+                            // searching. Observed doing exactly that for 50s while
+                            // the modem was registered (stat 5).
+                            //
+                            // A query is a command, so it works fine in here. On a
+                            // failed query, fall back to the (possibly stale) flag
+                            // rather than blocking bring-up entirely.
+                            COMMAND_CHANNEL
+                                .send(command_task::ModemCommand::CeregQuery(
+                                    cereg::CeregQuery,
+                                ))
+                                .await;
+                            let now_registered = match communication::CEREG_RESULT.wait().await {
+                                Ok(status) => matches!(status.stat, Some(1) | Some(5)),
+                                Err(_) => registered,
+                            };
+                            registered = now_registered;
+
+                            match pdp {
+                                Ok(true) if now_registered => {
+                                    // One-shot signal-quality read for the log. Purely
+                                    // diagnostic; a failed query must not hold up bring-up.
+                                    COMMAND_CHANNEL
+                                        .send(command_task::ModemCommand::CesqQuery(
+                                            cesq::CesqQuery,
+                                        ))
+                                        .await;
+                                    match communication::CESQ_RESULT.wait().await {
+                                        Ok(q) => match q.rsrp_dbm {
+                                            Some(dbm) => info!(
+                                                "signal: RSRP {} dBm (rsrq idx {:?})",
+                                                dbm, q.rsrq_index
+                                            ),
+                                            None => info!("signal: RSRP unknown (idx {:?})", q.rsrp_index),
+                                        },
+                                        Err(e) => warn!("CESQ query failed: {:?}", e),
+                                    }
+
                                     info!("PDP context active - seeding IpUp");
                                     state_sender.send(state::MqttStackState::IpUp);
                                     seeded = true;
