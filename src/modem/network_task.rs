@@ -464,6 +464,7 @@ pub async fn network_task(
                     }
                     ModemUrc::Cereg(body) => {
                         registered = cereg_registered(body.as_str());
+                        crate::display::status::set_registered(registered);
                         // Network registration changed. Only act on it as a
                         // recovery signal: if we're sitting in Down (e.g. after a
                         // connect dropped mid-handshake) and the radio has
@@ -540,6 +541,7 @@ pub async fn network_task(
                                 Err(_) => registered,
                             };
                             registered = now_registered;
+                            crate::display::status::set_registered(registered);
 
                             match pdp {
                                 Ok(true) if now_registered => {
@@ -551,13 +553,19 @@ pub async fn network_task(
                                         ))
                                         .await;
                                     match communication::CESQ_RESULT.wait().await {
-                                        Ok(q) => match q.rsrp_dbm {
-                                            Some(dbm) => info!(
-                                                "signal: RSRP {} dBm (rsrq idx {:?})",
-                                                dbm, q.rsrq_index
-                                            ),
-                                            None => info!("signal: RSRP unknown (idx {:?})", q.rsrp_index),
-                                        },
+                                        Ok(q) => {
+                                            crate::display::status::set_rsrp(q.rsrp_dbm);
+                                            match q.rsrp_dbm {
+                                                Some(dbm) => info!(
+                                                    "signal: RSRP {} dBm (rsrq idx {:?})",
+                                                    dbm, q.rsrq_index
+                                                ),
+                                                None => info!(
+                                                    "signal: RSRP unknown (idx {:?})",
+                                                    q.rsrp_index
+                                                ),
+                                            }
+                                        }
                                         Err(e) => warn!("CESQ query failed: {:?}", e),
                                     }
 

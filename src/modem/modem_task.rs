@@ -235,7 +235,7 @@ async fn publish_and_wait(topic: heapless::String<50>, message: heapless::String
 /// minutes away and the payload is not buffered, so a genuine drop is a gap not a
 /// corruption. Returns whether the message is believed delivered.
 async fn publish_once(topic: heapless::String<50>, message: heapless::String<50>, label: &str) -> bool {
-    match publish_and_wait(topic, message).await {
+    let delivered = match publish_and_wait(topic, message).await {
         PublishOutcome::Ok => {
             info!("{} published", label);
             true
@@ -248,7 +248,10 @@ async fn publish_once(topic: heapless::String<50>, message: heapless::String<50>
             error!("{} rejected — dropped", label);
             false
         }
-    }
+    };
+    // Status panel: one call here covers every publish path.
+    crate::display::status::note_publish(delivered);
+    delivered
 }
 
 /// Sleep sensor and host for `secs`, host waking on the RTC.
@@ -261,6 +264,7 @@ async fn rest_on_rtc(secs: u32) {
     if secs == 0 {
         return;
     }
+    crate::display::status::set_sleep(crate::display::status::SleepPhase::Resting);
     SENSOR_ASLEEP.reset();
     ENTER_SLEEP.signal(SleepMode::SensorOnly);
     SENSOR_ASLEEP.wait().await;
@@ -292,6 +296,7 @@ pub async fn modem_task(
         // point, so a probe or an early motion wake shortens the following sleep
         // rather than shifting the schedule.
         let cycle_start = crate::rtc::now_secs_of_day().await;
+        crate::display::status::set_sleep(crate::display::status::SleepPhase::Awake);
 
         // wait for modem ready before starting GNSS
         Timer::after(Duration::from_secs(12)).await;
@@ -346,6 +351,7 @@ pub async fn modem_task(
             // Both good: the normal path.
             (Some(fix_pair), true) => {
                 NO_FIX_COUNT.store(0, Ordering::Relaxed);
+                crate::display::status::note_fix();
 
                 let speed = fix_pair.speed_mps();
                 // is_moving: a measured non-zero speed means moving; Some(0.0) is
@@ -389,6 +395,7 @@ pub async fn modem_task(
             (None, true) => {
                 let strikes = NO_FIX_COUNT.load(Ordering::Relaxed).saturating_add(1);
                 NO_FIX_COUNT.store(strikes, Ordering::Relaxed);
+                crate::display::status::note_nofix(strikes);
                 warn!("no GNSS fix ({} consecutive)", strikes);
 
                 let mut text: heapless::String<50> = heapless::String::new();
@@ -476,6 +483,9 @@ pub async fn modem_task(
                 if blind {
                     // Cannot see the sky here. Only being moved changes that, so
                     // motion is the only wake source worth arming.
+                    crate::display::status::set_sleep(
+                        crate::display::status::SleepPhase::DeepRest,
+                    );
                     crate::rtc::disarm_wake().await;
                     MOTION_WOKE.reset();
                     ENTER_SLEEP.signal(SleepMode::DeepRest);
@@ -495,6 +505,7 @@ pub async fn modem_task(
                     let probe = core::cmp::min(PROBE_SECS, secs_left(cycle_start).await);
                     info!("stationary: probing {} s for motion", probe);
 
+                    crate::display::status::set_sleep(crate::display::status::SleepPhase::Probe);
                     crate::rtc::arm_wake_secs(probe).await;
                     PROBE_RESULT.reset();
                     ENTER_SLEEP.signal(SleepMode::Probe);
@@ -514,6 +525,9 @@ pub async fn modem_task(
                             info!("probe: no motion — going to indefinite rest");
                             publish_status(&mut mqtt_watcher, status_topic.clone(), NOT_MOVING_MSG).await;
 
+                            crate::display::status::set_sleep(
+                                crate::display::status::SleepPhase::DeepRest,
+                            );
                             crate::rtc::disarm_wake().await;
                             MOTION_WOKE.reset();
                             ENTER_SLEEP.signal(SleepMode::DeepRest);

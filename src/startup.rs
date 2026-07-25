@@ -1,4 +1,4 @@
-use crate::display::screen::{self, StatusScreen};
+use crate::display::screen;
 
 use crate::modem::communication::{COMMAND_CHANNEL, GNSS_COMMAND};
 use crate::modem::gnss::commands::init::GnssInit;
@@ -115,9 +115,27 @@ pub async fn startup(spawner: Spawner) {
         I2c<'static, I2C0, embassy_rp::i2c::Async>,
     > = i2c::I2cDevice::new(i2c0_bus);
 
-    
-
-    // let mut display = screen::Display::new(i2c_for_display).await;
+    // ---- Display (debug status panel) ----
+    // Panel is OFF by default; FeatherWing button A (Feather D9 = GPIO25 on the
+    // Challenger+) turns it on for 30s, a second press blanks it early. The
+    // task takes MQTT_STATE's one spare watch receiver (3 slots total;
+    // network_task and modem_task take the other two) so the stack phase is
+    // read at the source with no setter plumbing. A failed display init only
+    // disables the panel -- it must never take the device down.
+    let display_button = embassy_rp::gpio::Input::new(p.PIN_25, embassy_rp::gpio::Pull::Up);
+    match screen::Display::new(i2c_for_display).await {
+        Ok(display) => match crate::modem::communication::MQTT_STATE.receiver() {
+            Some(mqtt_rx) => spawner
+                .spawn(crate::display::status::display_task(
+                    display,
+                    display_button,
+                    mqtt_rx,
+                ).expect("failed to spawn display task"))
+                ,
+            None => defmt::warn!("no MQTT_STATE receiver free - status panel disabled"),
+        },
+        Err(_) => defmt::warn!("display init failed - status panel disabled"),
+    }
 
     let my_altitude_known = 21.0;
     // let mut pressure_sensor =

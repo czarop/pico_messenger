@@ -66,7 +66,7 @@ impl Display {
             CriticalSectionRawMutex,
             I2c<'static, I2C0, embassy_rp::i2c::Async>,
         >,
-    ) -> Self {
+    ) -> Result<Self, DisplayError> {
         let di: display_interface_i2c::I2CInterface<
             embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice<
                 '_,
@@ -79,18 +79,24 @@ impl Display {
             .connect(di);
 
         let mut display: GraphicsMode<_, _, { 128 * 128 / 8 }> = raw_disp.into();
-        display.init().await.unwrap();
+        display.init().await.map_err(|_| DisplayError::Init)?;
         display.clear();
-        display.flush().await.unwrap();
-        Self { inner: display }
+        display.flush().await.map_err(|_| DisplayError::Init)?;
+        Ok(Self { inner: display })
     }
 
-    pub async fn turn_display_off(&mut self) {
-        self.inner.display_on(false).await.unwrap();
+    pub async fn turn_display_off(&mut self) -> Result<(), DisplayError> {
+        self.inner
+            .display_on(false)
+            .await
+            .map_err(|_| DisplayError::Power)
     }
 
-    pub async fn turn_display_on(&mut self) {
-        self.inner.display_on(true).await.unwrap();
+    pub async fn turn_display_on(&mut self) -> Result<(), DisplayError> {
+        self.inner
+            .display_on(true)
+            .await
+            .map_err(|_| DisplayError::Power)
     }
 
     // pub async fn show_status(&mut self, battery: u8, signal: i8) { ... }
@@ -106,9 +112,9 @@ impl Display {
 
         Ok(())
     }
-    pub async fn clear(&mut self) {
+    pub async fn clear(&mut self) -> Result<(), DisplayError> {
         self.inner.clear();
-        self.inner.flush().await.unwrap();
+        self.inner.flush().await.map_err(|_| DisplayError::Flush)
     }
 }
 
@@ -118,4 +124,8 @@ use thiserror::Error;
 pub enum DisplayError {
     #[error("Error updating display")]
     Flush,
+    #[error("Error initialising display")]
+    Init,
+    #[error("Error switching display on/off")]
+    Power,
 }
