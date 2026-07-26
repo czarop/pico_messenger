@@ -265,7 +265,10 @@ async fn rest_on_rtc(secs: u32) {
     if secs == 0 {
         return;
     }
-    crate::display::status::set_sleep(crate::display::status::SleepPhase::Resting);
+    crate::display::status::note_sleep_entry(
+        crate::display::status::SleepPhase::Resting,
+        crate::rtc::now_secs_of_day().await,
+    );
     SENSOR_ASLEEP.reset();
     ENTER_SLEEP.signal(SleepMode::SensorOnly);
     SENSOR_ASLEEP.wait().await;
@@ -484,8 +487,9 @@ pub async fn modem_task(
                 if blind {
                     // Cannot see the sky here. Only being moved changes that, so
                     // motion is the only wake source worth arming.
-                    crate::display::status::set_sleep(
+                    crate::display::status::note_sleep_entry(
                         crate::display::status::SleepPhase::DeepRest,
+                        crate::rtc::now_secs_of_day().await,
                     );
                     crate::rtc::disarm_wake().await;
                     MOTION_WOKE.reset();
@@ -506,7 +510,10 @@ pub async fn modem_task(
                     let probe = core::cmp::min(PROBE_SECS, secs_left(cycle_start).await);
                     info!("stationary: probing {} s for motion", probe);
 
-                    crate::display::status::set_sleep(crate::display::status::SleepPhase::Probe);
+                    crate::display::status::note_sleep_entry(
+                        crate::display::status::SleepPhase::Probe,
+                        crate::rtc::now_secs_of_day().await,
+                    );
                     crate::rtc::arm_wake_secs(probe).await;
                     PROBE_RESULT.reset();
                     ENTER_SLEEP.signal(SleepMode::Probe);
@@ -526,8 +533,9 @@ pub async fn modem_task(
                             info!("probe: no motion — going to indefinite rest");
                             publish_status(&mut mqtt_watcher, status_topic.clone(), NOT_MOVING_MSG).await;
 
-                            crate::display::status::set_sleep(
+                            crate::display::status::note_sleep_entry(
                                 crate::display::status::SleepPhase::DeepRest,
+                                crate::rtc::now_secs_of_day().await,
                             );
                             crate::rtc::disarm_wake().await;
                             MOTION_WOKE.reset();

@@ -54,6 +54,90 @@ pub async fn init(rtc_int: Input<'static>) {
     *RTC_INT.lock().await = Some(rtc_int);
 }
 
+// ---------------------------------------------------------------------------
+// Button peek support
+// ---------------------------------------------------------------------------
+//
+// The display button (FeatherWing A, GPIO25) is also a DORMANT wake source: a
+// press while asleep wakes the chip, the status panel runs for its on-period,
+// and the SAME sleep is re-entered -- the tracking cycle never notices. The
+// peek loops below own that behaviour so no caller of the sleep functions has
+// to know button wakes exist.
+//
+// # The pin steal, and why it is sound
+//
+// `display_task` owns the button `Input` for awake-time presses, and embassy
+// gives no way to arm a dormant wake on a pad without `&mut Input`. Rather
+// than route the one Input through a mutex-and-handshake dance between two
+// tasks, the sleep path constructs a SECOND `Input` on the same pin via
+// `Peri::steal()` -- same config (input, Pull::Up), so nothing observable
+// changes -- arms the dormant-wake guard on it, and after wake `mem::forget`s
+// it. The forget is the load-bearing part: `Input`'s Drop deconfigures the
+// pad, which would kill display_task's copy. Forgetting leaks nothing (the
+// struct is trivially small and the pad is left exactly as display_task
+// expects).
+//
+// # Wake discrimination
+//
+// All three wake lines are level-holding active-low: the RTC INT holds until
+// its flag is cleared, the BNO085 HINT until the pending report is read, and
+// the button for as long as the human holds it. So after `dormant_sleep()`
+// returns, pad LEVELS identify the cause -- and a real source always wins over
+// the button, so a race resolves in favour of the cycle.
+//
+// # Scheduled wake landing mid-peek
+//
+// The dormant pad triggers are edge-based, so an RTC/HINT edge that fires
+// while the panel is up would be slept through on blind re-entry. Hence every
+// re-entry is preceded by a level check of the real sources (in
+// `sleep_dormant` directly; in the IMU paths via the closure's HINT check
+// running before each dormant). Worst case a scheduled wake is delayed by the
+// panel's remaining on-time (<=30s); the cadence self-corrects because all
+// sleep timing is measured against the RTC wall clock.
+
+/// Build the second `Input` on the button pin. See module notes above; every
+/// use MUST be paired with `core::mem::forget` after the guard is dropped.
+fn steal_button() -> Input<'static> {
+    // SAFETY: the only other handle is display_task's Input with identical
+    // configuration; we never reconfigure and never let Drop run.
+    let pin = unsafe { embassy_rp::peripherals::PIN_25::steal() };
+    Input::new(pin, embassy_rp::gpio::Pull::Up)
+}
+
+/// Falling-edge dormant wake: all three sources are open-drain/active-low, and
+/// an edge (not level) trigger avoids immediate re-wake off a held line.
+fn edge_low() -> embassy_rp::gpio::DormantWakeConfig {
+    embassy_rp::gpio::DormantWakeConfig {
+        edge_high: false,
+        edge_low: true,
+        level_high: false,
+        level_low: false,
+    }
+}
+
+/// If the status panel is lit, ask it to blank and wait until it has -- the
+/// clocks must never stop with a live frame on the OLED (it would display
+/// stale data for the whole sleep and burn panel current doing it).
+async fn close_panel_if_visible() {
+    use crate::display::status;
+    if status::PANEL_VISIBLE.load(core::sync::atomic::Ordering::Relaxed) {
+        status::PANEL_DONE.reset();
+        status::CLOSE_PANEL.signal(());
+        status::PANEL_DONE.wait().await;
+    }
+}
+
+/// Run one button peek: open the panel, wait until it closes (timeout or
+/// second press). Residual race, accepted: a press landing between PANEL_DONE
+/// and the pads re-arming is lost -- press again.
+async fn run_peek() {
+    use crate::display::status;
+    defmt::info!("button peek: showing status panel, then re-entering sleep");
+    status::PANEL_DONE.reset();
+    status::SHOW_PANEL.signal(());
+    status::PANEL_DONE.wait().await;
+}
+
 /// Sleep the RP2350 until the RTC's INT line pulses.
 ///
 /// **Real:** arm GPIO dormant-wake on `rtc_int` (falling edge -- the PCF8523 INT
@@ -101,35 +185,78 @@ pub async fn wait_rtc_int() {
     rtc_int.wait_for_falling_edge().await;
 }
 
-/// Run `f` with the RTC INT pad armed as a dormant wake source.
+/// Run `f` -- which must enter DORMANT (e.g. `dormant_sleep_on_hint`) and
+/// return whether ITS OWN wake line (BNO085 HINT) is asserted -- with the RTC
+/// INT pad and the peek button armed as additional dormant wake sources.
+/// Returns `f`'s verdict from the final iteration: `true` = the caller's
+/// source fired, `false` = the RTC (or a spurious wake) ended the sleep.
 ///
-/// DORMANT halts all clocks and is woken by ANY armed pad, but every guard must
-/// be alive across the single `dormant_sleep()` call — so a multi-source sleep
-/// has to be assembled in one place. This lets the task that owns the other pad
-/// (currently `imu_task`, which owns the BNO085 HINT line) add the RTC to its own
-/// sleep: it arms its pad and calls `dormant_sleep()` inside `f`.
+/// DORMANT halts all clocks and is woken by ANY armed pad, but every guard
+/// must be alive across the single `dormant_sleep()` call -- so a multi-source
+/// sleep has to be assembled in one place. The task that owns the other pad
+/// (currently `imu_task`, which owns the BNO085 HINT line) arms its pad and
+/// dormants inside `f`.
 ///
-/// The guard disarms the pad on drop, after `f` returns.
-pub async fn with_rtc_dormant_wake<R>(f: impl FnOnce() -> R) -> R {
-    use embassy_rp::gpio::DormantWakeConfig;
-
+/// `f` returning its own line's LEVEL is what makes peeks and mid-peek wakes
+/// safe here: it is re-evaluated before every re-entry, so a HINT that
+/// asserted while the panel was up is seen, not slept through.
+pub async fn with_rtc_dormant_wake(mut f: impl FnMut() -> bool) -> bool {
     let mut guard = RTC_INT.lock().await;
     let rtc_int = guard
         .as_mut()
         .expect("power::with_rtc_dormant_wake before power::init");
 
-    // INT is open-drain active-low: wake on the falling edge. A level trigger
-    // would risk immediate re-wake while the flag is still asserted.
-    let cfg = DormantWakeConfig {
-        edge_high: false,
-        edge_low: true,
-        level_high: false,
-        level_low: false,
-    };
-    let dormant = rtc_int.dormant_wake(cfg);
-    let r = f();
-    drop(dormant);
-    r
+    close_panel_if_visible().await;
+
+    loop {
+        let mut btn = steal_button();
+        let own_source = {
+            let _btn_wake = btn.dormant_wake(edge_low());
+            let _rtc_wake = rtc_int.dormant_wake(edge_low());
+            f()
+        };
+        let rtc_fired = rtc_int.is_low();
+        let btn_pressed = btn.is_low();
+        core::mem::forget(btn); // Drop would deconfigure display_task's pad
+
+        if own_source || rtc_fired {
+            return own_source;
+        }
+        if btn_pressed {
+            run_peek().await;
+            continue; // same sleep, same pads; f re-checks HINT on entry
+        }
+        // Spurious: neither source nor button. Report as an RTC-side wake --
+        // identical to the pre-peek behaviour (any non-HINT wake ended the
+        // sleep), and `sleep_for_secs`-style callers re-measure anyway.
+        return false;
+    }
+}
+
+/// DeepRest variant of [`with_rtc_dormant_wake`]: same peek behaviour, but
+/// loops until `f`'s OWN source fired -- there is no RTC alarm in this mode
+/// (motion is the only legitimate end), so an RTC-attributed or spurious wake
+/// just re-enters. The RTC pad is deliberately NOT armed.
+pub async fn with_button_peek_dormant(mut f: impl FnMut() -> bool) {
+    close_panel_if_visible().await;
+
+    loop {
+        let mut btn = steal_button();
+        let own_source = {
+            let _btn_wake = btn.dormant_wake(edge_low());
+            f()
+        };
+        let btn_pressed = btn.is_low();
+        core::mem::forget(btn);
+
+        if own_source {
+            return;
+        }
+        if btn_pressed {
+            run_peek().await;
+        }
+        // Not our source: re-enter (f re-checks its line on entry).
+    }
 }
 
 pub async fn sleep_for_secs(target_secs: u32) {
@@ -179,27 +306,44 @@ pub async fn sleep_dormant() {
 
     #[cfg(not(feature = "mock_host_sleep"))]
     {
-        use embassy_rp::gpio::DormantWakeConfig;
+        close_panel_if_visible().await;
 
-        defmt::info!("entering DORMANT (RTC INT wake) -- last log until wake");
+        defmt::info!("entering DORMANT (RTC INT + button wake) -- last log until wake");
 
-        // The guard configures the pad as a dormant-wake source and disarms it on
-        // drop. INT is open-drain active-low, so wake on the falling edge; a level
-        // trigger would risk immediate re-wake if the flag is still asserted.
-        let cfg = DormantWakeConfig {
-            edge_high: false,
-            edge_low: true,
-            level_high: false,
-            level_low: false,
-        };
-        let dormant = rtc_int.dormant_wake(cfg);
+        loop {
+            // Both guards must be alive across the single dormant_sleep().
+            // They disarm on drop; the button Input must then be forgotten,
+            // never dropped (see the pin-steal notes above).
+            let mut btn = steal_button();
+            {
+                let _btn_wake = btn.dormant_wake(edge_low());
+                let _rtc_wake = rtc_int.dormant_wake(edge_low());
 
-        // Stops all clocks. Returns only after the RTC INT edge.
-        embassy_rp::clocks::dormant_sleep();
+                // Stops all clocks. Returns only after an armed pad's edge.
+                embassy_rp::clocks::dormant_sleep();
+            }
 
-        // Explicitly release the wake config. `embassy_time` is wrong now (its
-        // driver clock stopped and it believes no time passed) -- rely on the RTC
-        // wall clock for anything spanning the sleep.
-        drop(dormant);
+            // `embassy_time` is wrong now (its driver clock stopped and it
+            // believes no time passed) -- rely on the RTC wall clock for
+            // anything spanning the sleep.
+            //
+            // Discriminate by LEVEL: RTC INT holds low until its flag is
+            // cleared, so if it fired -- even during a peek's panel window --
+            // this check sees it and the real wake wins over the button.
+            let rtc_fired = rtc_int.is_low();
+            let btn_pressed = btn.is_low();
+            core::mem::forget(btn);
+
+            if rtc_fired {
+                break;
+            }
+            if btn_pressed {
+                run_peek().await;
+                continue; // same sleep: re-arm both pads, back to DORMANT
+            }
+            // Spurious wake: neither line low. Return; sleep_for_secs
+            // re-measures against the RTC and re-arms the remainder.
+            break;
+        }
     }
 }

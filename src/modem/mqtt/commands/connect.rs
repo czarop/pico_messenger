@@ -112,5 +112,5 @@ impl Default for MqttConnect {
 }
 
 #[derive(Clone, AtatCmd)]
-#[at_cmd("#MQTTDISC", OkResponse, timeout_ms = 20000)]
+#[at_cmd("#MQTTDISC", OkResponse, timeout_ms = 25000)]
 pub struct MqttDisconnect;

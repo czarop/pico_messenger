@@ -150,7 +150,16 @@ where
         self.inner.sleep().await.expect("failed to sleep BNO085");
         embassy_time::Timer::after_millis(50).await;
         self.inner.handle_all_messages(&mut Delay, 10).await;
-        self.inner.dormant_sleep_on_hint();
+        // The peek helper arms the button as an extra dormant wake source and
+        // runs the status panel on a press, re-entering afterwards; it loops
+        // until the closure reports HINT asserted (motion), which -- being a
+        // level check on each pass -- also catches motion that fired while the
+        // panel was up.
+        crate::power::with_button_peek_dormant(|| {
+            self.inner.dormant_sleep_on_hint();
+            self.inner.hint_low()
+        })
+        .await;
         self.wake_tolerant().await;
     }
 
@@ -191,12 +200,17 @@ where
 
         #[cfg(not(feature = "mock_host_sleep"))]
         let woke_on_motion = {
-            crate::power::with_rtc_dormant_wake(|| self.inner.dormant_sleep_on_hint()).await;
-            // Discriminate after the fact: HINT is level, active-low, and stays
-            // asserted until the pending report is read. If it is still low the
-            // BNO085 has something for us, i.e. motion woke us; otherwise it was
-            // the RTC.
-            self.inner.hint_low()
+            // The closure returns whether HINT is asserted after the dormant
+            // returns: HINT is level, active-low, and stays asserted until the
+            // pending report is read, so `true` means motion woke us (or fired
+            // during a button-peek's panel window). The helper arms the RTC
+            // and button pads alongside, runs the panel on a button press and
+            // re-enters, and hands back only for HINT/RTC wakes.
+            crate::power::with_rtc_dormant_wake(|| {
+                self.inner.dormant_sleep_on_hint();
+                self.inner.hint_low()
+            })
+            .await
         };
 
         self.wake_tolerant().await;
