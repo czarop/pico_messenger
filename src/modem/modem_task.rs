@@ -199,10 +199,11 @@ async fn secs_left(cycle_start: Option<u32>) -> u32 {
 /// cycles, no logs — the device just goes quiet until reset.
 const MQTT_DOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Host-side ceiling on waiting for a publish result. Exceeds the `#MQTTPUB`
-/// command timeout (60s) so the modem's own timeout wins first and we read a real
-/// result rather than cutting it off early.
-const PUBLISH_TIMEOUT: Duration = Duration::from_secs(65);
+/// Host-side ceiling on waiting for a publish result. Top of the timeout
+/// ladder: modem PUBACK window (60s, #MQTTCFG protocol_timeout) < atat
+/// `#MQTTPUB` timeout (70s) < this (75s), so each layer reads the layer
+/// below's real answer rather than cutting it off early.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(75);
 
 enum PublishOutcome {
     Ok,
@@ -241,7 +242,7 @@ async fn publish_once(topic: heapless::String<50>, message: heapless::String<50>
             true
         }
         PublishOutcome::Timeout => {
-            warn!("{} result timed out — assuming delivered (QoS1), not retrying", label);
+            warn!("{} result timed out — treating as sent (QoS0), not retrying", label);
             true
         }
         PublishOutcome::Rejected => {

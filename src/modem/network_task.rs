@@ -68,6 +68,12 @@ pub async fn network_task(
     let mut try_disconnect = false;
     let mut socket_id = 0;
     let mut connect_failures: u8 = 0;
+    // Consecutive SOCKETCREATE failures. A failed create is the authoritative
+    // "network not actually usable" signal (CGPADDR and CEREG both report
+    // registered-with-address from cold boot while the IP session is dead, so
+    // they cannot be trusted as gates). Repeated failures while registered mean
+    // a wedged modem IP stack -> escalate to AT#RESET=0.
+    let mut bringup_failures: u8 = 0;
     let mut registered = true;
     'outer: loop {
         if !matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_disconnect {
@@ -188,31 +194,57 @@ pub async fn network_task(
             }
 
             defmt::info!("creating socket");
-            // bring up the mqtt stack
-            let mut retries = 0;
+            // SINGLE attempt, deliberately. SOCKETCREATE does not fail
+            // transiently when the IP session is genuinely up; every failure
+            // mode seen on hardware (2100/2106 network down, wedged stack) is
+            // non-retryable at command cadence, and the old 10x zero-backoff
+            // retry loop only hammered the modem -- one drained stale
+            // registered-looking URC could trigger 10 create errors in ~1.5s.
+            // The create IS the liveness probe: fail -> the network is not
+            // usable right now, drop to Down and let a fresh registration /
+            // PDN-ACT edge re-drive.
+            COMMAND_CHANNEL
+                .send(command_task::ModemCommand::SocketCreate(
+                    socket_info.clone(),
+                ))
+                .await;
 
-            loop {
-                COMMAND_CHANNEL
-                    .send(command_task::ModemCommand::SocketCreate(
-                        socket_info.clone(),
-                    ))
-                    .await;
-
-                match communication::SOCKET_RESULT.wait().await {
-                    Ok(socket) => {
-                        state_sender.send(state::MqttStackState::SocketReady(socket));
-                        socket_id = socket;
-                        break;
+            match communication::SOCKET_RESULT.wait().await {
+                Ok(socket) => {
+                    bringup_failures = 0;
+                    state_sender.send(state::MqttStackState::SocketReady(socket));
+                    socket_id = socket;
+                }
+                Err(e) => {
+                    bringup_failures = bringup_failures.saturating_add(1);
+                    error!(
+                        "socket create failed ({:?}), bring-up failure {} - network not usable, dropping to Down",
+                        e, bringup_failures
+                    );
+                    // Escalation backstop: repeated failures WHILE REGISTERED
+                    // mean the modem's IP stack is wedged (seen surviving
+                    // reflash and reporting a phantom socket) and only a reboot
+                    // clears it. When not registered, a reset cannot help --
+                    // the network is simply absent -- and resetting mid-attach
+                    // would restart the (60s+) attach and loop forever.
+                    if bringup_failures >= 5 && registered {
+                        warn!(
+                            "socket create failed {} times while registered - resetting modem (AT#RESET=0)",
+                            bringup_failures
+                        );
+                        bringup_failures = 0;
+                        COMMAND_CHANNEL
+                            .send(command_task::ModemCommand::ModemReset(ModemReset::default()))
+                            .await;
+                        let _ = communication::NETWORK_RESULT.wait().await;
+                    } else {
+                        // Brief settle before draining more URCs: rate-limits
+                        // churn from a backlog of stale attach URCs and gives a
+                        // genuine in-progress attach time to complete.
+                        Timer::after(Duration::from_secs(2)).await;
                     }
-                    Err(e) => {
-                        error!("Failed to create socket: {:?}", e);
-                        retries += 1;
-                        if retries > 9 {
-                            error!("Failed to create socket 10 times, Aborting");
-                            state_sender.send(state::MqttStackState::Down);
-                            continue 'outer;
-                        }
-                    } // back to the outer loop
+                    state_sender.send(state::MqttStackState::Down);
+                    continue 'outer;
                 }
             }
             info!("Socket created, configuring MQTT stack");
@@ -292,7 +324,7 @@ pub async fn network_task(
                     // modem reset for a clean slate.
                     connect_failures = connect_failures.saturating_add(1);
                     error!(
-                        "Failed to connect MQTT stack ({:?}), failure {} - rebuilding socket",
+                        "Failed to connect MQTT stack ({:?}), failure {} - dropping to Down",
                         e, connect_failures
                     );
                     if connect_failures >= 5 {
