@@ -134,6 +134,70 @@ where
         }
     }
 
+    /// Enable significant-motion wake and sleep the BNO085, tolerating a
+    /// transient I2C NAK instead of panicking.
+    ///
+    /// Root cause this fixes: hardware hard-locked at
+    /// `enable_significant_motion_wake().expect(...)` with
+    /// `I2c(Abort(NoAcknowledge))` — the part NAK'd (it can be mid-report just
+    /// after a motion wake, exactly when this runs), the `.expect()` panicked,
+    /// and a panic halts the task forever (display frozen, button dead). Same
+    /// trade as `wake_tolerant`: losing motion-wake for one cycle costs a
+    /// fallback to RTC-only sleep; panicking costs the whole device.
+    ///
+    /// Returns true if the sensor is armed for motion wake, false if it could
+    /// not be configured (caller should fall back to a timed/RTC sleep and not
+    /// rely on a motion wake this cycle).
+    ///
+    /// Set-Feature caveat still applies: this is the ONLY Set-Feature traffic
+    /// permitted around the sleep window, and only because it is the executable
+    /// sleep-arm itself. Do not add more.
+    async fn arm_motion_and_sleep_tolerant(&mut self) -> bool {
+        const ATTEMPTS: u8 = 5;
+        const GAP_MS: u64 = 20;
+
+        for attempt in 1..=ATTEMPTS {
+            match self.inner.enable_significant_motion_wake().await {
+                Ok(()) => break,
+                Err(e) => {
+                    if attempt == ATTEMPTS {
+                        error!(
+                            "BNO085 motion-wake arm failed after {} attempts: {:?} — sleeping without motion wake this cycle",
+                            ATTEMPTS,
+                            defmt::Debug2Format(&e)
+                        );
+                        return false;
+                    }
+                    warn!("BNO085 motion-wake arm attempt {} failed — retrying", attempt);
+                    embassy_time::Timer::after_millis(GAP_MS).await;
+                }
+            }
+        }
+
+        for attempt in 1..=ATTEMPTS {
+            match self.inner.sleep().await {
+                Ok(()) => {
+                    embassy_time::Timer::after_millis(50).await;
+                    self.inner.handle_all_messages(&mut Delay, 10).await;
+                    return true;
+                }
+                Err(e) => {
+                    if attempt == ATTEMPTS {
+                        error!(
+                            "BNO085 sleep failed after {} attempts: {:?} — continuing",
+                            ATTEMPTS,
+                            defmt::Debug2Format(&e)
+                        );
+                        return false;
+                    }
+                    warn!("BNO085 sleep attempt {} failed — retrying", attempt);
+                    embassy_time::Timer::after_millis(GAP_MS).await;
+                }
+            }
+        }
+        false
+    }
+
     /// Sleep the BNO085 and DORMANT the whole board until significant motion.
     ///
     /// Do NOT add Set Feature traffic to this sequence. Executable SLEEP
@@ -143,13 +207,8 @@ where
     /// comes back.
     pub async fn wait_for_motion_dormant(&mut self) {
         clear_heading();
-        self.inner
-            .enable_significant_motion_wake()
-            .await
-            .expect("failed to enable significant motion wake");
-        self.inner.sleep().await.expect("failed to sleep BNO085");
-        embassy_time::Timer::after_millis(50).await;
-        self.inner.handle_all_messages(&mut Delay, 10).await;
+        // Tolerant: a NAK here previously panicked and hard-locked the device.
+        let _armed = self.arm_motion_and_sleep_tolerant().await;
         // The peek helper arms the button as an extra dormant wake source and
         // runs the status panel on a press, re-entering afterwards; it loops
         // until the closure reports HINT asserted (motion), which -- being a
@@ -182,13 +241,9 @@ where
     /// Same rule as the other sleeps — no Set Feature traffic in here.
     pub async fn wait_for_motion_or_rtc(&mut self) -> WakeSource {
         clear_heading();
-        self.inner
-            .enable_significant_motion_wake()
-            .await
-            .expect("failed to enable significant motion wake");
-        self.inner.sleep().await.expect("failed to sleep BNO085");
-        embassy_time::Timer::after_millis(50).await;
-        self.inner.handle_all_messages(&mut Delay, 10).await;
+        // Tolerant: a NAK here previously panicked and hard-locked the device
+        // (seen as I2c(Abort(NoAcknowledge)) at this line after a motion wake).
+        let _armed = self.arm_motion_and_sleep_tolerant().await;
 
         #[cfg(feature = "mock_host_sleep")]
         let woke_on_motion = {
@@ -247,9 +302,33 @@ where
     /// preserves the sensor configuration and [`Self::wake_sensor`] restores it.
     pub async fn sleep_sensor(&mut self) {
         clear_heading();
-        self.inner.sleep().await.expect("failed to sleep BNO085");
-        embassy_time::Timer::after_millis(50).await;
-        self.inner.handle_all_messages(&mut Delay, 10).await;
+        // Tolerant: this runs on EVERY timed-rest cycle, so a bare .expect()
+        // here is the highest-frequency lock-up risk of all the sleep paths.
+        // A NAK just means the part was busy; retry, and on persistent failure
+        // continue rather than panic (a missed sleep-arm costs power, not the
+        // device).
+        const ATTEMPTS: u8 = 5;
+        for attempt in 1..=ATTEMPTS {
+            match self.inner.sleep().await {
+                Ok(()) => {
+                    embassy_time::Timer::after_millis(50).await;
+                    self.inner.handle_all_messages(&mut Delay, 10).await;
+                    return;
+                }
+                Err(e) => {
+                    if attempt == ATTEMPTS {
+                        error!(
+                            "BNO085 sleep_sensor failed after {} attempts: {:?} — continuing",
+                            ATTEMPTS,
+                            defmt::Debug2Format(&e)
+                        );
+                        return;
+                    }
+                    warn!("BNO085 sleep_sensor attempt {} failed — retrying", attempt);
+                    embassy_time::Timer::after_millis(20).await;
+                }
+            }
+        }
     }
 
     /// Bring the BNO085 back from [`Self::sleep_sensor`]. Executable ON restores
@@ -263,13 +342,9 @@ where
     /// attached. Same rule — no Set Feature traffic in here.
     pub async fn wait_for_motion(&mut self) {
         clear_heading();
-        self.inner
-            .enable_significant_motion_wake()
-            .await
-            .expect("failed to enable significant motion wake");
-        self.inner.sleep().await.expect("failed to sleep BNO085");
-        embassy_time::Timer::after_millis(50).await;
-        self.inner.handle_all_messages(&mut Delay, 10).await;
+        // Tolerant arm+sleep (test path, but mirror the real ones so a NAK
+        // never hard-locks during bench testing either).
+        let _armed = self.arm_motion_and_sleep_tolerant().await;
         self.inner.wait_for_hint().await;
         self.wake_tolerant().await;
     }

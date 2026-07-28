@@ -28,6 +28,14 @@ pub static UNSUBSCRIBE_RESULT: Signal<CriticalSectionRawMutex, Result<heapless::
 
 pub static PDP_ADDRESS_RESULT: Signal<CriticalSectionRawMutex, Result<bool, ModemError>> = Signal::new();
 
+/// Set by `network_task` when it resets the modem during teardown (a failed
+/// MQTTDISC leaves a wedged socket that only a reset clears). `modem_task`
+/// checks and clears this before attempting PSM: entering PSM into a rebooting
+/// modem is pointless (SLEEPMODE would just fail its #SLEEP wait and burn ~45s).
+/// The modem re-attaches on its own after the reboot, ready for the next cycle.
+pub static MODEM_RESET_ON_TEARDOWN: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Result of `ModemCommand::EnterPsm` / `ModemCommand::ExitPsm`.
 ///
 /// Shared by both directions because PSM transitions are strictly serialised:

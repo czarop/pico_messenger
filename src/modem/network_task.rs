@@ -118,33 +118,38 @@ pub async fn network_task(
                 .await;
             let disconnected = communication::NETWORK_RESULT.wait().await;
 
-            // A SUCCESSFUL MQTTDISC frees the socket, so closing it again is
-            // redundant (and answers a harmless +CME ERROR: 2104, "invalid socket
-            // id"). A FAILED one does not -- and that is the case that poisons the
-            // next cycle.
+            // A SUCCESSFUL MQTTDISC frees the socket, so nothing more is needed.
+            // A FAILED one (timeout) leaves the socket wedged: forcing a close
+            // just answers 2104 ("invalid socket id" -- won't close), the wedge
+            // survives to the next cycle, blocks PSM entry THIS cycle (no #SLEEP,
+            // battery burned), and forces a reset next cycle anyway.
             //
-            // Seen on hardware: publish failed with 2215, MQTTDISC then got no
-            // answer at all and timed out after 20s, so the socket stayed open. The
-            // following cycle found it still listed, AT#SOCKETCLOSE returned 2104,
-            // and recovery escalated to AT#RESET=0 -- a full modem reboot costing
-            // ~50s, a wiped clock, and a burst of 2100/2106 errors. All from one
-            // unacknowledged disconnect.
+            // Broker logs show the disconnect almost always REACHES the broker
+            // even when the host sees a timeout -- the session is genuinely gone
+            // network-side; only the modem's local socket state is confused. And
+            // that confused state provably won't clear with SOCKETCLOSE (2104).
+            // So on a failed disconnect, go STRAIGHT to AT#RESET=0: it is the
+            // only thing that clears the wedge, and doing it now (rather than
+            // discovering the wedge next cycle) means we still enter PSM cleanly
+            // this cycle instead of skipping sleep and resetting later.
             //
-            // So: only force the close when the disconnect did not confirm.
+            // Cost: one reset (~reboot + re-attach) on a failed disconnect. But
+            // that reset was already happening next cycle -- this just moves it
+            // earlier and reclaims the sleep. Net: one fewer skipped PSM per
+            // failed DISC.
             if let Err(e) = disconnected {
-                defmt::warn!("MQTTDISC did not confirm ({:?}) - forcing socket close", e);
+                defmt::warn!(
+                    "MQTTDISC did not confirm ({:?}) - socket is wedged, resetting modem now to reclaim PSM",
+                    e
+                );
                 COMMAND_CHANNEL
-                    .send(command_task::ModemCommand::SocketClose(SocketClose {
-                        context_id: socket_info.context_id(),
-                        socket_id,
-                    }))
+                    .send(command_task::ModemCommand::ModemReset(ModemReset::default()))
                     .await;
-                match communication::NETWORK_RESULT.wait().await {
-                    Ok(()) => defmt::info!("socket closed after failed disconnect"),
-                    // 2104 (invalid socket id) here is fine: it means the socket
-                    // was already gone, which is the outcome we wanted anyway.
-                    Err(e) => defmt::warn!("forced socket close failed: {:?}", e),
-                }
+                let _ = communication::NETWORK_RESULT.wait().await;
+                // Tell modem_task not to attempt PSM this cycle: the modem is
+                // rebooting, SLEEPMODE would fail its #SLEEP wait and burn ~45s.
+                communication::MODEM_RESET_ON_TEARDOWN
+                    .store(true, core::sync::atomic::Ordering::Relaxed);
             }
 
             state_sender.send(state::MqttStackState::Down);
@@ -560,9 +565,74 @@ pub async fn network_task(
                         warn!("Network start called");
                         // The modem auto-activates context 5 once NB-IoT registration
                         // completes, which can take well over a minute on first attach.
-                        // Poll rather than probe once
+                        // Poll rather than probe once.
                         let mut seeded = false;
+                        // Set if a teardown URC surfaces mid-poll (network/modem
+                        // dropped during bring-up): abandon the poll and drop to
+                        // Down so bring-up restarts against reality.
+                        let mut abort_bringup = false;
                         for _ in 0..40 {
+                            // Drain any URCs the ingest task has buffered since we
+                            // last looked. THIS is how registration is observed
+                            // during the poll.
+                            //
+                            // Why not a CEREG query (the old approach)? A +CEREG
+                            // query RESPONSE and an unsolicited +CEREG URC are the
+                            // same wire shape, so the atat digester classifies the
+                            // reply as a URC and the query's wait() never sees it --
+                            // the device sat "searching" for 50s while registered
+                            // (stat 5). The URC is already parsed and waiting in the
+                            // subscription buffer; we just have to read it. This is
+                            // the registration-gate anti-pattern's proper fix:
+                            // registration comes from the URC stream (single source
+                            // of truth), never from a racing query.
+                            //
+                            // try_next_message_pure() is non-blocking (returns None
+                            // when the buffer is empty), verified present on atat's
+                            // UrcSubscription at rev edceb1a (embassy Subscriber,
+                            // rev 24da56d).
+                            while let Some(urc) = sub.try_next_message_pure() {
+                                match urc {
+                                    // The one we're here for.
+                                    ModemUrc::Cereg(body) => {
+                                        registered = cereg_registered(body.as_str());
+                                        crate::display::status::set_registered(registered);
+                                    }
+                                    // Teardown URCs: the link/modem dropped during
+                                    // bring-up. Continuing to poll would bring a
+                                    // stack up on a dead link. Abort and let the
+                                    // outer loop re-drive from Down -- same effect
+                                    // the main URC arm has for these.
+                                    ModemUrc::SocketClosed(_)
+                                    | ModemUrc::RebootHost
+                                    | ModemUrc::RebootReset
+                                    | ModemUrc::RebootWD(..)
+                                    | ModemUrc::SysStart => {
+                                        warn!("teardown URC during bring-up poll - aborting");
+                                        abort_bringup = true;
+                                    }
+                                    ModemUrc::IPStackUpdate(cgev) => match cgev.event() {
+                                        ip_stack::CgevEvent::NwDetach
+                                        | ip_stack::CgevEvent::MeDetach
+                                        | ip_stack::CgevEvent::MePdnDeact(_)
+                                        | ip_stack::CgevEvent::NwPdnDeact(_) => {
+                                            warn!("detach URC during bring-up poll - aborting");
+                                            abort_bringup = true;
+                                        }
+                                        // An attach event only helps us; the poll is
+                                        // already heading to IpUp, so nothing to do.
+                                        _ => {}
+                                    },
+                                    // Irrelevant to the searching decision and the
+                                    // poll is transient: safe to drop. (MqttReceived
+                                    // can't occur pre-connect anyway.)
+                                    _ => {}
+                                }
+                            }
+                            if abort_bringup {
+                                break;
+                            }
+
                             COMMAND_CHANNEL
                                 .send(command_task::ModemCommand::GetPdpAddress(
                                     CgPaddrQuery::default(),
@@ -570,31 +640,7 @@ pub async fn network_task(
                                 .await;
                             let pdp = communication::PDP_ADDRESS_RESULT.wait().await;
 
-                            // Ask the modem directly rather than trusting the flag
-                            // maintained from +CEREG URCs.
-                            //
-                            // This loop runs in the monitor's COMMAND branch, so it
-                            // never reaches the URC arm -- `registered` is frozen at
-                            // whatever it was when the poll started. A registration
-                            // that completes mid-poll is therefore invisible, and the
-                            // device sits out the entire window insisting it is still
-                            // searching. Observed doing exactly that for 50s while
-                            // the modem was registered (stat 5).
-                            //
-                            // A query is a command, so it works fine in here. On a
-                            // failed query, fall back to the (possibly stale) flag
-                            // rather than blocking bring-up entirely.
-                            COMMAND_CHANNEL
-                                .send(command_task::ModemCommand::CeregQuery(
-                                    cereg::CeregQuery,
-                                ))
-                                .await;
-                            let now_registered = match communication::CEREG_RESULT.wait().await {
-                                Ok(status) => matches!(status.stat, Some(1) | Some(5)),
-                                Err(_) => registered,
-                            };
-                            registered = now_registered;
-                            crate::display::status::set_registered(registered);
+                            let now_registered = registered;
 
                             match pdp {
                                 Ok(true) if now_registered => {
@@ -641,7 +687,14 @@ pub async fn network_task(
                             }
                             Timer::after(Duration::from_secs(3)).await;
                         }
-                        if !seeded {
+                        if abort_bringup {
+                            // A teardown/detach URC surfaced mid-poll: the link
+                            // died during bring-up. Drop to Down so a fresh
+                            // registration edge re-drives, and do NOT count this as
+                            // a "dead poll" -- it isn't a stuck-searching modem, the
+                            // network went away underneath us.
+                            state_sender.send(state::MqttStackState::Down);
+                        } else if !seeded {
                             // Distinguish "still searching" (stat 2, wedged --
                             // resettable) from a plain missing PDP (wait for the
                             // CGEV edge as before). Only the former escalates.

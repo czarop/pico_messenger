@@ -51,7 +51,7 @@ const GNSS_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// `gnss_interval` (the old `Timer::after` seconds value) is now used only on the
 /// enter_psm-failure fallback path, where no real sleep happens.
-const SLEEP_MINUTES: u8 = 1;
+const SLEEP_MINUTES: u8 = 5;
 
 
 /// Await the next genuine GNSS `Fix`, skipping transient states
@@ -178,10 +178,14 @@ async fn publish_status(
         warn!("status publish: MQTT teardown did not reach Down — sleeping anyway");
     }
 
-    sweep_sockets_before_psm().await;
-    if let Err(e) = crate::modem::psm::enter_psm().await {
-        error!("status publish: enter_psm failed: {:?}", e);
-        crate::modem::diag::note_psm_skip();
+    if communication::MODEM_RESET_ON_TEARDOWN.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        warn!("status publish: modem was reset during teardown — skipping PSM this cycle");
+    } else {
+        sweep_sockets_before_psm().await;
+        if let Err(e) = crate::modem::psm::enter_psm().await {
+            error!("status publish: enter_psm failed: {:?}", e);
+            crate::modem::diag::note_psm_skip();
+        }
     }
     ok
 }/// Close any sockets the modem still lists open, before entering PSM.
@@ -357,6 +361,13 @@ pub async fn modem_task(
         crate::display::status::set_sleep(crate::display::status::SleepPhase::Awake);
         crate::modem::diag::note_cycle_start();
 
+        // Holds this cycle's location payload (base64) if one was built and
+        // published. Retained so that if teardown has to reset the modem (a
+        // failed MQTTDISC means the socket was unhealthy and the QoS0 publish
+        // may never have actually left the radio), we can resend it over the
+        // fresh post-reboot connection rather than silently losing the fix.
+        let mut location_b64: Option<heapless::String<50>> = None;
+
         // wait for modem ready before starting GNSS
         Timer::after(Duration::from_secs(12)).await;
  
@@ -444,7 +455,9 @@ pub async fn modem_task(
                     temperature,
                 );
 
-                publish_once(mqtt_topic.clone(), payload.to_base64(), "location").await;
+                let b64 = payload.to_base64();
+                location_b64 = Some(b64.clone());
+                publish_once(mqtt_topic.clone(), b64, "location").await;
 
                 // Self-health report on the good cycle, same live session (one
                 // extra MQTTPUB to pico/diag). Cumulative counters mean this
@@ -533,12 +546,65 @@ pub async fn modem_task(
             warn!("MQTT stack did not reach Down in {} s — sleeping anyway", MQTT_DOWN_TIMEOUT.as_secs());
         }
 
-        // Modem into PSM. enter_psm awaits the #SLEEP URC (~7-12s: the modem can't
-        // sleep until the network releases RRC), not merely the OK. A failure here
-        // means the modem is still awake — don't dormant the host on top of that,
-        // just skip sleeping this cycle and retry.
-        sweep_sockets_before_psm().await;
-        match crate::modem::psm::enter_psm().await {
+        // If teardown reset the modem (failed MQTTDISC -> the socket was
+        // unhealthy, so the QoS0 location may never have actually gone out),
+        // recover the connection and RESEND the location before sleeping —
+        // otherwise this cycle silently loses its fix. The reset already cleared
+        // the wedged socket and the modem re-attaches on its own (~6s per
+        // hardware). We resend a DUPLICATE deliberately: we cannot know if the
+        // first publish left the radio, and a duplicate point is far cheaper
+        // than a missing one.
+        //
+        // If any step fails (re-attach or resend), give up gracefully and enter
+        // PSM anyway (option (a)): accept the miss this cycle rather than
+        // burning the whole 15-min window awake. We'll see from the diag how
+        // often that happens.
+        if communication::MODEM_RESET_ON_TEARDOWN.swap(false, core::sync::atomic::Ordering::Relaxed) {
+            warn!("modem was reset during teardown — recovering to resend location");
+            if let Some(payload) = location_b64.clone() {
+                // Re-drive bring-up: after the reset the modem re-attaches and
+                // network_task's recovery arm brings the stack toward IpUp; a
+                // Start then completes it to MqttReady. Bounded by the same
+                // ready timeout as the main path.
+                communication::MQTT_COMMAND.signal(MqttCommand::Start);
+                let ready = with_timeout(MQTT_READY_TIMEOUT, wait_ready(&mut mqtt_watcher))
+                    .await
+                    .is_ok();
+                if ready {
+                    info!("resend: link back — republishing location");
+                    let delivered = publish_once(mqtt_topic.clone(), payload, "location-resend").await;
+                    if delivered {
+                        crate::modem::diag::note_resend();
+                    }
+                    // Tear the resend session down cleanly. If THIS disconnect
+                    // also wedges, network_task sets the reset flag again; we do
+                    // not loop — one resend attempt only (option (a)).
+                    communication::MQTT_COMMAND.signal(MqttCommand::Stop);
+                    let _ = with_timeout(MQTT_DOWN_TIMEOUT, async {
+                        loop {
+                            if let MqttStackState::Down = mqtt_watcher.changed().await {
+                                break;
+                            }
+                        }
+                    })
+                    .await;
+                } else {
+                    warn!("resend: link did not return in time — giving up, sleeping");
+                    crate::modem::diag::note_skipped();
+                }
+            }
+            // Clear any reset flag the resend's own teardown may have set: we
+            // are committing to PSM now regardless (no resend loop).
+            communication::MODEM_RESET_ON_TEARDOWN.store(false, core::sync::atomic::Ordering::Relaxed);
+        }
+
+        {
+            // Modem into PSM. enter_psm awaits the #SLEEP URC (~7-12s: the modem can't
+            // sleep until the network releases RRC), not merely the OK. A failure here
+            // means the modem is still awake — don't dormant the host on top of that,
+            // just skip sleeping this cycle and retry.
+            sweep_sockets_before_psm().await;
+            match crate::modem::psm::enter_psm().await {
             Ok(()) => {
                 use crate::sensors::bno085::bno085::{
                     ENTER_SLEEP, MOTION_WOKE, PROBE_RESULT, SleepMode, WakeSource,
@@ -547,7 +613,7 @@ pub async fn modem_task(
                 // FORCE_STATIONARY is a TEMP test override — the mock GNSS always
                 // reports moving, so without it the stationary path is never taken
                 // in the mock. Set to `false` for production behaviour.
-                const FORCE_STATIONARY: bool = true;
+                const FORCE_STATIONARY: bool = false;
                 let stationary = FORCE_STATIONARY || !is_moving;
 
                 if blind {
@@ -647,6 +713,7 @@ pub async fn modem_task(
                 // don't spin. embassy_time still runs (no dormant happened).
                 Timer::after(Duration::from_secs(gnss_interval as u64)).await;
             }
+        }
         }
     }
 }

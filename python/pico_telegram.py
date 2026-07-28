@@ -162,6 +162,9 @@ def handle_diag(payload, retained):
         return
     stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
     age = " (retained)" if retained else ""
+    # Compact CSV from the device. Legend:
+    #   c=cycles s=skipped f=connect-fails r=resets p=psm-skips
+    #   d=resends q=signal(RSRP dBm or na). Miss rate = s/c.
     tg("sendMessage", chat_id=TG_CHAT,
        text=f"📊 {payload}{age}\n🕒 {stamp} UTC")
     print("diag:", payload, "retained" if retained else "")

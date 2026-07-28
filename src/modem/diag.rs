@@ -32,6 +32,10 @@ static CONNECT_FAILURES: AtomicU32 = AtomicU32::new(0);
 static RESETS: AtomicU32 = AtomicU32::new(0);
 /// SLEEPMODE returned OK but no #SLEEP URC followed (PSM entry declined).
 static PSM_SKIPS: AtomicU32 = AtomicU32::new(0);
+/// Location resends after a teardown reset (duplicate sent because the first
+/// publish's delivery was unverifiable). High `rsnd` relative to `cyc` means
+/// disconnects are frequently wedging and we're leaning on the resend path.
+static RESENDS: AtomicU32 = AtomicU32::new(0);
 
 pub fn note_cycle_start() {
     CYCLES.fetch_add(1, Ordering::Relaxed);
@@ -53,6 +57,10 @@ pub fn note_psm_skip() {
     PSM_SKIPS.fetch_add(1, Ordering::Relaxed);
 }
 
+pub fn note_resend() {
+    RESENDS.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Build the `pico/diag` payload: plain CSV, human-readable in Telegram.
 ///
 /// `rsrp_dbm` is this cycle's CESQ reading; `None` (no measurable signal, CESQ
@@ -69,22 +77,17 @@ pub fn payload(rsrp_dbm: Option<i16>) -> heapless::String<50> {
     let cfail = CONNECT_FAILURES.load(Ordering::Relaxed);
     let rst = RESETS.load(Ordering::Relaxed);
     let psm = PSM_SKIPS.load(Ordering::Relaxed);
-    // Write is infallible into a String large enough; if a wildly long RSRP
-    // ever overflowed, truncation is acceptable for a diagnostic.
+    let rsnd = RESENDS.load(Ordering::Relaxed);
+    // Compact field names: the MQTT message field is capped at 50 chars, and
+    // the verbose form overflowed once counts reached 3+ digits. Legend:
+    // c=cycles s=skipped f=connect-fails r=resets p=psm-skips d=resends
+    // q=signal (RSRP dBm, or na when unmeasurable).
     match rsrp_dbm {
         Some(dbm) => {
-            let _ = write!(
-                s,
-                "cyc={} skip={} cfail={} rst={} psm={} rsrp={}",
-                cyc, skip, cfail, rst, psm, dbm
-            );
+            let _ = write!(s, "c={} s={} f={} r={} p={} d={} q={}", cyc, skip, cfail, rst, psm, rsnd, dbm);
         }
         None => {
-            let _ = write!(
-                s,
-                "cyc={} skip={} cfail={} rst={} psm={} rsrp=na",
-                cyc, skip, cfail, rst, psm
-            );
+            let _ = write!(s, "c={} s={} f={} r={} p={} d={} q=na", cyc, skip, cfail, rst, psm, rsnd);
         }
     }
     s
