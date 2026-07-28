@@ -31,19 +31,19 @@
 //! update it, so the panel's "sleep: probe 4m32s" is true time asleep. The RTC
 //! calendar is used (not `Instant`) because `embassy_time` freezes in DORMANT.
 //!
-//! Known limit (fine for a debug aid): `Instant`-based ages ("pub: OK 12s")
-//! still freeze across DORMANT -- read them as "of awake time".
+//! All displayed ages (sleep and publish) use the RTC wall clock, because
+//! `embassy_time` freezes across DORMANT.
 
 use core::cell::RefCell;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use embassy_futures::select::{Either, Either3, select, select3};
+use embassy_futures::select::{Either, select};
 use embassy_rp::gpio::Input;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Timer};
 
 use crate::display::screen::{Display, StatusScreen};
 use crate::modem::mqtt::state::MqttStackState;
@@ -62,13 +62,17 @@ const REDRAW: Duration = Duration::from_secs(1);
 
 /// power -> display: open the panel (button woke the chip out of DORMANT).
 pub static SHOW_PANEL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-/// power -> display: blank NOW (a sleep is about to stop the clocks).
-pub static CLOSE_PANEL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// display -> power: panel is blanked; safe to (re)enter DORMANT.
 pub static PANEL_DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// True while the OLED is actually lit. `power` consults this to decide
-/// whether a CLOSE_PANEL round-trip is needed before dormanting.
+/// whether to wait for the panel before dormanting.
 pub static PANEL_VISIBLE: AtomicBool = AtomicBool::new(false);
+/// True while a sleep is waiting for the panel to close. THE INVARIANT: the
+/// panel may defer SLEEP (power waits for the natural close, and this flag
+/// makes the screen say so), but must NEVER defer WAKE -- wake lines are
+/// polled during any panel window and act within ~100ms. Set/cleared only by
+/// `power`; render() turns it into "<phase> @ screen off".
+pub static SLEEP_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Which sleep-regime phase `modem_task` is currently in, for the bottom line.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -86,8 +90,10 @@ pub enum SleepPhase {
 struct StatusInner {
     registered: bool,
     rsrp_dbm: Option<i16>,
-    /// Outcome and time of the last publish attempt.
-    last_pub: Option<(bool, Instant)>,
+    /// Outcome and RTC seconds-of-day of the last publish attempt. RTC, not
+    /// `Instant`: embassy_time freezes in DORMANT, so an Instant age showed
+    /// "20s ago" after 88 minutes of deep sleep (the awake time only).
+    last_pub: Option<(bool, Option<u32>)>,
     fix_count: u16,
     nofix_count: u16,
     sleep: SleepPhase,
@@ -117,9 +123,16 @@ pub fn set_rsrp(dbm: Option<i16>) {
     STATUS.lock(|s| s.borrow_mut().rsrp_dbm = dbm);
 }
 
-/// Record the outcome of a publish attempt (true = believed delivered).
-pub fn note_publish(delivered: bool) {
-    STATUS.lock(|s| s.borrow_mut().last_pub = Some((delivered, Instant::now())));
+/// Read the last RSRP set this cycle (for the diag payload).
+pub fn rsrp() -> Option<i16> {
+    STATUS.lock(|s| s.borrow().rsrp_dbm)
+}
+
+/// Record the outcome of a publish attempt (true = believed delivered) and
+/// the RTC seconds-of-day it happened, read by the caller (this fn must stay
+/// non-async and cheap).
+pub fn note_publish(delivered: bool, rtc_secs_of_day: Option<u32>) {
+    STATUS.lock(|s| s.borrow_mut().last_pub = Some((delivered, rtc_secs_of_day)));
 }
 
 /// A successful GNSS fix: bump the fix counter and clear the no-fix streak,
@@ -214,11 +227,22 @@ pub fn render(mqtt: Option<MqttStackState>, rtc_now_secs: Option<u32>) -> Status
         line(format_args!("MQTT: {}", phase))
     };
 
+    // Age via the RTC wall clock (survives DORMANT). Seconds-of-day wraps at
+    // midnight, so ages beyond 24h alias -- acceptable for a debug panel.
     let pub_line = match last_pub {
         Some((ok, at)) => {
             let outcome = if ok { "OK" } else { "FAIL" };
-            let age = at.elapsed().as_secs().min(9999);
-            line(format_args!("pub: {} {}s", outcome, age))
+            match (at, rtc_now_secs) {
+                (Some(at), Some(now)) => {
+                    let secs = crate::rtc::elapsed_secs(at, now);
+                    if secs >= 60 {
+                        line(format_args!("pub: {} {}m{:02}s", outcome, secs / 60, secs % 60))
+                    } else {
+                        line(format_args!("pub: {} {}s", outcome, secs))
+                    }
+                }
+                _ => line(format_args!("pub: {}", outcome)),
+            }
         }
         None => line(format_args!("pub: none")),
     };
@@ -232,6 +256,20 @@ pub fn render(mqtt: Option<MqttStackState>, rtc_now_secs: Option<u32>) -> Status
             SleepPhase::Probe => "probe",
             SleepPhase::DeepRest => "deep",
         };
+        // A sleep waiting on the panel to close announces itself instead of
+        // an age -- the device is not actually asleep yet.
+        if SLEEP_PENDING.load(Ordering::Relaxed) && sleep != SleepPhase::Awake {
+            return StatusScreen {
+                battery,
+                message: [
+                    net,
+                    mqtt_line,
+                    pub_line,
+                    fix_line,
+                    line(format_args!("{} @ screen off", phase)),
+                ],
+            };
+        }
         // Age via the RTC wall clock (survives DORMANT; `Instant` does not).
         match (sleep, sleep_entry, rtc_now_secs) {
             (SleepPhase::Awake, _, _) | (_, None, _) | (_, _, None) => {
@@ -300,28 +338,50 @@ pub async fn display_task(
 
         let mut shown_secs = 0u32;
         loop {
-            let rtc_now = crate::rtc::now_secs_of_day().await;
-            let screen = render(mqtt_rx.try_get(), rtc_now);
-            if display.show_message(screen).await.is_err() {
-                // Transient I2C NAK: skip this frame, never panic.
-                defmt::warn!("display: redraw failed");
-            }
-
-            match select3(
-                Timer::after(REDRAW),
-                button.wait_for_falling_edge(),
-                CLOSE_PANEL.wait(),
+            // Both the RTC read and the OLED write are awaits on the SHARED
+            // I2C0 bus (telemetry, RTC, pressure, MAX17048 all contend). If the
+            // bus stalls, an unbounded await here NEVER returns: the loop can't
+            // advance, shown_secs never increments so the panel never times
+            // out, and PANEL_DONE never fires -- the panel freezes on its last
+            // frame ("awake", counter stuck) until a button press happens to
+            // land on the exact await. Seen on hardware. Bound both: a stall
+            // costs one skipped frame, logged, never a permanent freeze.
+            let rtc_now = match embassy_time::with_timeout(
+                Duration::from_millis(500),
+                crate::rtc::now_secs_of_day(),
             )
             .await
             {
-                Either3::First(()) => {
+                Ok(v) => v,
+                Err(_) => {
+                    defmt::warn!("display: RTC read timed out - skipping frame");
+                    None
+                }
+            };
+            let screen = render(mqtt_rx.try_get(), rtc_now);
+            match embassy_time::with_timeout(
+                Duration::from_millis(500),
+                display.show_message(screen),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                // Transient I2C NAK or bus stall: skip this frame, never hang.
+                Ok(Err(_)) => defmt::warn!("display: redraw failed"),
+                Err(_) => defmt::warn!("display: redraw timed out - skipping frame"),
+            }
+
+            match select(Timer::after(REDRAW), button.wait_for_falling_edge()).await {
+                Either::First(()) => {
                     shown_secs += 1;
                     if shown_secs >= PANEL_TIMEOUT_SECS {
                         break;
                     }
                 }
-                // Second press: blank early. CLOSE_PANEL: a sleep is due.
-                Either3::Second(()) | Either3::Third(()) => break,
+                // Second press: blank early. (A due sleep does not force the
+                // panel shut -- power waits for this natural close, and the
+                // SLEEP_PENDING line tells the user what happens at blank.)
+                Either::Second(()) => break,
             }
         }
 

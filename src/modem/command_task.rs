@@ -106,12 +106,18 @@ pub async fn command_task(
                 #[allow(unreachable_patterns)]
                 _ => unreachable!(),
             },
-            ModemCommand::ModemReset(r) => match client.send(&r).await {
-                Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
-                Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
-                #[allow(unreachable_patterns)]
-                _ => unreachable!(),
-            },
+            ModemCommand::ModemReset(r) => {
+                // Single chokepoint for all AT#RESET=0 escalations (wedged
+                // socket, stuck-searching, connect-retry) -- count here so the
+                // diag `rst` field reflects every reset regardless of caller.
+                crate::modem::diag::note_reset();
+                match client.send(&r).await {
+                    Ok(_) => communication::NETWORK_RESULT.signal(Ok(())),
+                    Err(e) => communication::NETWORK_RESULT.signal(Err(ModemError::from(e))),
+                    #[allow(unreachable_patterns)]
+                    _ => unreachable!(),
+                }
+            }
             ModemCommand::ClockQuery(q) => match client.send(&q).await {
                 Ok(r) => communication::CLOCK_RESULT.signal(Ok(r)),
                 Err(e) => communication::CLOCK_RESULT.signal(Err(ModemError::from(e))),

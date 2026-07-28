@@ -74,10 +74,30 @@ pub async fn network_task(
     // they cannot be trusted as gates). Repeated failures while registered mean
     // a wedged modem IP stack -> escalate to AT#RESET=0.
     let mut bringup_failures: u8 = 0;
+    // Consecutive Start cycles whose registration poll fully exhausted without
+    // reaching stat 1/5. The modem can wedge in stat 2 ("searching") with the
+    // PDP context still ACTIVE -- so neither the connect-failure path nor the
+    // CGEV/#IPCFG recovery arm fires (both need a PDP-down edge that never
+    // comes), and the device polls "searching" forever. Seen on hardware for
+    // 250s+ after a botched teardown. AT#RESET=0 is the only exit; this counter
+    // triggers it after two dead polls (~4 min) rather than hanging.
+    let mut search_failures: u8 = 0;
     let mut registered = true;
     'outer: loop {
         if !matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_disconnect {
             defmt::info!("disconnecting");
+
+            // Settle before tearing down. On a marginal link, MQTTDISC issued
+            // immediately after a publish OK races the still-in-flight PUBLISH
+            // and TLS bytes: the modem's disconnect then gets no confirmation
+            // in its 25s window, times out, and leaves the socket wedged --
+            // which forces a full AT#RESET=0 the NEXT cycle (seen on hardware:
+            // hung DISC -> no PSM entry -> skipped sleep -> stale socket ->
+            // reset). QoS0 removed the publish-side ack wait but not the bytes
+            // on the wire; this gives them time to drain before DISC. Cheap
+            // insurance against an expensive cascade.
+            embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
+
             for topic in subscribed_topics.iter() {
                 defmt::info!("unsubscribing");
                 COMMAND_CHANNEL
@@ -323,6 +343,7 @@ pub async fn network_task(
                     // creation instead. After repeated failures, escalate to a
                     // modem reset for a clean slate.
                     connect_failures = connect_failures.saturating_add(1);
+                    crate::modem::diag::note_connect_failure();
                     error!(
                         "Failed to connect MQTT stack ({:?}), failure {} - dropping to Down",
                         e, connect_failures
@@ -602,6 +623,7 @@ pub async fn network_task(
                                     }
 
                                     info!("PDP context active - seeding IpUp");
+                                    search_failures = 0;
                                     state_sender.send(state::MqttStackState::IpUp);
                                     seeded = true;
                                     break;
@@ -620,9 +642,32 @@ pub async fn network_task(
                             Timer::after(Duration::from_secs(3)).await;
                         }
                         if !seeded {
-                            warn!(
-                                "PDP context not active after polling - waiting for CGEV edge"
-                            );
+                            // Distinguish "still searching" (stat 2, wedged --
+                            // resettable) from a plain missing PDP (wait for the
+                            // CGEV edge as before). Only the former escalates.
+                            if registered {
+                                // Shouldn't happen: registered but not seeded.
+                                warn!("registered but PDP poll did not seed - waiting for CGEV edge");
+                            } else {
+                                search_failures = search_failures.saturating_add(1);
+                                warn!(
+                                    "still searching after full poll (dead poll {}) - PDP up but stat 2",
+                                    search_failures
+                                );
+                                if search_failures >= 2 {
+                                    warn!(
+                                        "modem wedged searching with live PDP - resetting (AT#RESET=0)"
+                                    );
+                                    search_failures = 0;
+                                    COMMAND_CHANNEL
+                                        .send(command_task::ModemCommand::ModemReset(
+                                            ModemReset::default(),
+                                        ))
+                                        .await;
+                                    let _ = communication::NETWORK_RESULT.wait().await;
+                                    state_sender.send(state::MqttStackState::Down);
+                                }
+                            }
                         }
                         break;
                     }

@@ -155,8 +155,14 @@ where
         // until the closure reports HINT asserted (motion), which -- being a
         // level check on each pass -- also catches motion that fired while the
         // panel was up.
-        crate::power::with_button_peek_dormant(|| {
-            self.inner.dormant_sleep_on_hint();
+        // `enter=false` is power's level poll (pre-entry checks and the
+        // during-peek wake watch); `enter=true` additionally dormants. HINT
+        // holds low until the pending report is read, so a level read cannot
+        // miss motion that fired while a panel was up and no pads were armed.
+        crate::power::with_button_peek_dormant(|enter| {
+            if enter {
+                self.inner.dormant_sleep_on_hint();
+            }
             self.inner.hint_low()
         })
         .await;
@@ -206,8 +212,14 @@ where
             // during a button-peek's panel window). The helper arms the RTC
             // and button pads alongside, runs the panel on a button press and
             // re-enters, and hands back only for HINT/RTC wakes.
-            crate::power::with_rtc_dormant_wake(|| {
-                self.inner.dormant_sleep_on_hint();
+            // `enter=false` is power's level poll: it runs before every
+            // dormant entry AND every ~100ms while a peek panel is up, so
+            // motion ends the probe within ~100ms no matter what the screen
+            // is doing. `enter=true` additionally dormants on HINT.
+            crate::power::with_rtc_dormant_wake(|enter| {
+                if enter {
+                    self.inner.dormant_sleep_on_hint();
+                }
                 self.inner.hint_low()
             })
             .await

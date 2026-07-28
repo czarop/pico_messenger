@@ -16,9 +16,10 @@ PASSWORD = "lel22PBP23@01"
 TOPIC_GNSS   = "pico/mqtt/gnss_update"
 TOPIC_STATUS = "pico/mqtt/motion_status"
 TOPIC_WILL   = "pico/mqtt/status"
+TOPIC_DIAG   = "pico/mqtt/diag"
 
 # QoS 1 to match the device's AtLeastOnce publishes.
-SUBSCRIPTIONS = [(TOPIC_GNSS, 1), (TOPIC_STATUS, 1), (TOPIC_WILL, 1)]
+SUBSCRIPTIONS = [(TOPIC_GNSS, 1), (TOPIC_STATUS, 1), (TOPIC_WILL, 1), (TOPIC_DIAG, 1)]
 
 TG_TOKEN = "8699589319:AAFBpa8sBXzj8dXr5-_mvRwCb258LhMpsNY"
 TG_CHAT  = "8633586659"
@@ -149,6 +150,23 @@ def handle_will(payload, retained):
     print("will:", payload, "retained" if retained else "")
 
 
+def handle_diag(payload, retained):
+    # Self-health CSV from the device, published once per successful cycle, e.g.
+    #   cyc=42 skip=3 cfail=1 rst=0 psm=2 rsrp=-104
+    # cyc = cycles attempted, skip = cycles that published no location (the miss
+    # rate is skip/cyc), cfail = MQTT connect failures, rst = modem resets,
+    # psm = PSM-entry skips, rsrp = signal (na = no measurable signal).
+    # Delivered only on good cycles, but the counters are cumulative, so a rise
+    # in skip between two reports means a cycle was missed in between.
+    if not payload:
+        return
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
+    age = " (retained)" if retained else ""
+    tg("sendMessage", chat_id=TG_CHAT,
+       text=f"📊 {payload}{age}\n🕒 {stamp} UTC")
+    print("diag:", payload, "retained" if retained else "")
+
+
 def on_connect(c, u, flags, rc, props=None):
     print("connected rc", rc)
     c.subscribe(SUBSCRIPTIONS)
@@ -165,6 +183,8 @@ def on_message(c, u, msg):
         handle_status(payload, retained)
     elif msg.topic == TOPIC_WILL:
         handle_will(payload, retained)
+    elif msg.topic == TOPIC_DIAG:
+        handle_diag(payload, retained)
     else:
         print("unrouted topic:", msg.topic, repr(payload))
 

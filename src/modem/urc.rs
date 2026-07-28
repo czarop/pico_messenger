@@ -92,8 +92,29 @@ where
             }
         }
 
-        // Branch B: standalone. Stock behaviour, trailing CRLF consumed.
-        atat::digest::parser::urc_helper(token.clone())(i)
+        // Branch B: standalone -- stock behaviour, trailing CRLF consumed.
+        // But only when it is PROVABLY standalone: if the stock match ends
+        // exactly at the end of the buffer, the discriminating byte (the '#'
+        // of a follower sharing this CRLF) may simply not have arrived yet --
+        // hardware shows the two URCs landing in separate UART chunks ~0.4ms
+        // apart, in which case Branch A above cannot see the follower. Defer
+        // (report no match, consume nothing) and let the digester retry when
+        // more bytes arrive; if the next bytes are the follower, Branch A
+        // wins the retry, otherwise this branch consumes as before.
+        //
+        // Cost of deferral: a genuinely final `#ENERGY` before UART silence
+        // stays unparsed until the next traffic (its log line appears late).
+        // At PSM entry `#SLEEP` follows within milliseconds, so in practice
+        // this never bites; the alternative -- consuming the CRLF that
+        // `#SLEEP` needs -- cost the host its sleep for a whole cycle.
+        let (rest, out) = atat::digest::parser::urc_helper(token.clone())(i)?;
+        if rest.is_empty() {
+            return Err(atat::nom::Err::Error(Error::from_error_kind(
+                i,
+                atat::nom::error::ErrorKind::Eof,
+            )));
+        }
+        Ok((rest, out))
     }
 }
 

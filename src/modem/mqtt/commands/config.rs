@@ -30,7 +30,15 @@ impl Default for MqttConfig {
             // past the host's timeouts. Send once; a genuine drop is a gap, not
             // a corruption (same policy as publish_once).
             publish_retry: Some(0),
-            keep_alive_pub_msg: Some(240),
+            // Keep-alive (PINGREQ interval). Was 240, which is longer than a
+            // test cadence -- a session orphaned by an IP change (Soracom
+            // re-NAT across a PDP cycle) then lingered broker-side for ~360s
+            // (1.5x), long enough to collide with the next cycle's reconnect as
+            // the same client-id ("already connected, closing old connection").
+            // 60s reaps a dead session well before any cycle reconnects. No
+            // battery cost: the session lives ~7s per cycle, far short of one
+            // PINGREQ interval, so a ping is never actually sent.
+            keep_alive_pub_msg: Some(60),
         }
     }
 }

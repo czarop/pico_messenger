@@ -32,6 +32,10 @@ const NO_FIX_PARKED_MSG: &str = "no gnss fix - sleeping until motion";
 
 /// Message published when the device is alive and connected but cannot fix.
 const NO_FIX_MSG: &str = "alive, no GNSS fix";
+
+/// Self-health diagnostics topic. Same namespace as the other publishes; the
+/// Telegram bridge routes it separately. Published once per successful cycle.
+const DIAG_TOPIC: &str = "pico/mqtt/diag";
 /// Seconds between the two GNSS fixes used to compute speed (the `#GNSSFIX`
 /// `<period>`). Short, decoupled from the publish cadence. ~3s gives a usable
 /// vehicle-speed baseline; lengthen toward 5s if pedestrian speed matters.
@@ -174,11 +178,60 @@ async fn publish_status(
         warn!("status publish: MQTT teardown did not reach Down — sleeping anyway");
     }
 
+    sweep_sockets_before_psm().await;
     if let Err(e) = crate::modem::psm::enter_psm().await {
         error!("status publish: enter_psm failed: {:?}", e);
+        crate::modem::diag::note_psm_skip();
     }
     ok
+}/// Close any sockets the modem still lists open, before entering PSM.
+///
+/// The modem will not enter PSM with an allocated socket: it accepts
+/// `AT#SLEEPMODE` with OK and then silently never emits `#SLEEP`, so the host
+/// waits out its timeout and skips sleep (battery cost), and the leaked socket
+/// wedges the NEXT cycle's bring-up (SOCKETCLOSE -> 2104 -> full modem reset).
+///
+/// Sockets leak on any path that opened one without a clean MQTTDISC -- most
+/// often a bring-up that created the socket then failed to CONNECT (signal),
+/// which the teardown path skips because there was no live session to tear
+/// down. This sweep makes "sockets clear before sleep" an explicit guarantee
+/// rather than an accident of whichever failure path happened to reset the
+/// modem. Best-effort: every step is log-and-continue; a failure here must not
+/// block the sleep attempt.
+async fn sweep_sockets_before_psm() {
+    use crate::modem::mqtt::commands::socket::{SocketClose, SocketQuery};
+
+    COMMAND_CHANNEL
+        .send(ModemCommand::SocketQuery(SocketQuery {}))
+        .await;
+    let open = match communication::SOCKET_QUERY_RESULT.wait().await {
+        Ok(sockets) => sockets.ids,
+        Err(e) => {
+            warn!("pre-PSM socket sweep: query failed ({:?}) - proceeding", e);
+            return;
+        }
+    };
+    if open.is_empty() {
+        return;
+    }
+    warn!("pre-PSM sweep: {} socket(s) still open - closing", open.len());
+    for id in open.iter() {
+        COMMAND_CHANNEL
+            .send(ModemCommand::SocketClose(SocketClose {
+                context_id: 5,
+                socket_id: *id,
+            }))
+            .await;
+        // 2104 ("invalid socket id") here just means it was already gone --
+        // harmless. Any error is logged and ignored; the sweep is advisory.
+        match communication::NETWORK_RESULT.wait().await {
+            Ok(()) => info!("pre-PSM sweep: closed socket {}", id),
+            Err(e) => warn!("pre-PSM sweep: close socket {} failed ({:?})", id, e),
+        }
+    }
 }
+
+
 
 /// Seconds left in the current cycle, measured against the RTC calendar so the
 /// schedule holds regardless of how long the cycle's work took. Falls back to a
@@ -250,8 +303,9 @@ async fn publish_once(topic: heapless::String<50>, message: heapless::String<50>
             false
         }
     };
-    // Status panel: one call here covers every publish path.
-    crate::display::status::note_publish(delivered);
+    // Status panel: one call here covers every publish path. RTC time, not
+    // Instant -- Instant freezes across DORMANT and lied about publish age.
+    crate::display::status::note_publish(delivered, crate::rtc::now_secs_of_day().await);
     delivered
 }
 
@@ -301,6 +355,7 @@ pub async fn modem_task(
         // rather than shifting the schedule.
         let cycle_start = crate::rtc::now_secs_of_day().await;
         crate::display::status::set_sleep(crate::display::status::SleepPhase::Awake);
+        crate::modem::diag::note_cycle_start();
 
         // wait for modem ready before starting GNSS
         Timer::after(Duration::from_secs(12)).await;
@@ -390,6 +445,15 @@ pub async fn modem_task(
                 );
 
                 publish_once(mqtt_topic.clone(), payload.to_base64(), "location").await;
+
+                // Self-health report on the good cycle, same live session (one
+                // extra MQTTPUB to pico/diag). Cumulative counters mean this
+                // report also accounts for any cycles skipped since the last
+                // one. RSRP is this cycle's CESQ reading from the shared slot.
+                if let Ok(diag_topic) = heapless::String::<50>::try_from(DIAG_TOPIC) {
+                    let diag = crate::modem::diag::payload(crate::display::status::rsrp());
+                    publish_once(diag_topic, diag, "diag").await;
+                }
                 communication::MQTT_COMMAND.signal(MqttCommand::Stop);
             }
 
@@ -432,6 +496,7 @@ pub async fn modem_task(
             // alone and retry next cadence.
             (_, false) => {
                 warn!("no MQTT link — nothing published this cycle");
+                crate::modem::diag::note_skipped();
                 communication::MQTT_COMMAND.signal(MqttCommand::Stop);
             }
         }
@@ -472,6 +537,7 @@ pub async fn modem_task(
         // sleep until the network releases RRC), not merely the OK. A failure here
         // means the modem is still awake — don't dormant the host on top of that,
         // just skip sleeping this cycle and retry.
+        sweep_sockets_before_psm().await;
         match crate::modem::psm::enter_psm().await {
             Ok(()) => {
                 use crate::sensors::bno085::bno085::{
@@ -508,17 +574,28 @@ pub async fn modem_task(
                     // Stationary: probe for motion for up to PROBE_SECS, never
                     // running past the end of the cycle.
                     let probe = core::cmp::min(PROBE_SECS, secs_left(cycle_start).await);
-                    info!("stationary: probing {} s for motion", probe);
 
-                    crate::display::status::note_sleep_entry(
-                        crate::display::status::SleepPhase::Probe,
-                        crate::rtc::now_secs_of_day().await,
-                    );
-                    crate::rtc::arm_wake_secs(probe).await;
-                    PROBE_RESULT.reset();
-                    ENTER_SLEEP.signal(SleepMode::Probe);
+                    // probe == 0 means the awake work consumed the whole cycle:
+                    // arm_wake_secs(0) would arm NOTHING, turning the "probe"
+                    // into an unlabelled indefinite motion wait with no RTC
+                    // pending (seen on hardware as "probing 0 s"). Skip the
+                    // dead probe and treat it as probe-ended-without-motion.
+                    let probe_result = if probe == 0 {
+                        info!("stationary: no cycle time left to probe — treating as parked");
+                        WakeSource::Rtc
+                    } else {
+                        info!("stationary: probing {} s for motion", probe);
+                        crate::display::status::note_sleep_entry(
+                            crate::display::status::SleepPhase::Probe,
+                            crate::rtc::now_secs_of_day().await,
+                        );
+                        crate::rtc::arm_wake_secs(probe).await;
+                        PROBE_RESULT.reset();
+                        ENTER_SLEEP.signal(SleepMode::Probe);
+                        PROBE_RESULT.wait().await
+                    };
 
-                    match PROBE_RESULT.wait().await {
+                    match probe_result {
                         WakeSource::Motion => {
                             // Moving again. Per spec: no immediate publish, just
                             // serve out the rest of the cycle and carry on, so the
@@ -531,6 +608,12 @@ pub async fn modem_task(
                             // Parked. Announce it, then sleep indefinitely with
                             // motion as the only wake source.
                             info!("probe: no motion — going to indefinite rest");
+                            // The status publish is awake work; without this
+                            // the screen kept saying "probe" (still counting)
+                            // through the whole bring-up.
+                            crate::display::status::set_sleep(
+                                crate::display::status::SleepPhase::Awake,
+                            );
                             publish_status(&mut mqtt_watcher, status_topic.clone(), NOT_MOVING_MSG).await;
 
                             crate::display::status::note_sleep_entry(
@@ -559,6 +642,7 @@ pub async fn modem_task(
             }
             Err(e) => {
                 warn!("enter_psm failed: {:?} — skipping sleep this cycle", e);
+                crate::modem::diag::note_psm_skip();
                 // Modem stayed awake; fall through to a plain timed wait so we
                 // don't spin. embassy_time still runs (no dormant happened).
                 Timer::after(Duration::from_secs(gnss_interval as u64)).await;

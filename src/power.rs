@@ -115,27 +115,95 @@ fn edge_low() -> embassy_rp::gpio::DormantWakeConfig {
     }
 }
 
-/// If the status panel is lit, ask it to blank and wait until it has -- the
-/// clocks must never stop with a live frame on the OLED (it would display
-/// stale data for the whole sleep and burn panel current doing it).
-async fn close_panel_if_visible() {
+/// THE INVARIANT, stated once and enforced by the two functions below: the
+/// status panel may defer SLEEP, but must NEVER defer WAKE. A lit panel means
+/// the executor is running, so wake needs no pad tricks -- the wake lines are
+/// all level-holding, and polling them every [`PEEK_POLL`] during any panel
+/// window makes wake effectively instant. Sleep, by contrast, politely waits
+/// for the panel's natural close (timeout or second press) while the screen
+/// reads "<phase> @ screen off".
+const PEEK_POLL: embassy_time::Duration = embassy_time::Duration::from_millis(100);
+
+/// If the status panel is lit, wait for its NATURAL close before stopping the
+/// clocks (never dormant with a live frame: it would show stale data all
+/// sleep and burn panel current doing it). While waiting, the SLEEP_PENDING
+/// flag makes the panel say what happens at blank.
+///
+/// Two hard requirements, both learned from a hardware regression where deep
+/// sleep went permanently deaf to motion:
+///
+/// * THE INVARIANT APPLIES HERE TOO: `wake_pending` is polled every
+///   [`PEEK_POLL`]; if a wake line asserts while the sleep is pending, return
+///   immediately (panel stays open) so the caller's level pre-check fires and
+///   the wake proceeds within ~100ms. The first version polled nothing, so a
+///   shake during "deep @ screen off" did nothing until the panel closed.
+/// * NEVER block solely on PANEL_DONE. The first version did
+///   `load(PANEL_VISIBLE); reset(); wait()` -- if the panel closed in that
+///   gap, the reset ATE the just-fired signal and the wait hung forever,
+///   leaving imu_task dead before the BNO085 dormant wake was ever armed.
+///   Re-reading PANEL_VISIBLE every poll tick makes a missed signal cost
+///   100ms, not eternity.
+async fn wait_panel_closed_for_sleep(mut wake_pending: impl FnMut() -> bool) {
     use crate::display::status;
-    if status::PANEL_VISIBLE.load(core::sync::atomic::Ordering::Relaxed) {
-        status::PANEL_DONE.reset();
-        status::CLOSE_PANEL.signal(());
-        status::PANEL_DONE.wait().await;
+    use core::sync::atomic::Ordering;
+    use embassy_futures::select::{Either, select};
+
+    if !status::PANEL_VISIBLE.load(Ordering::Relaxed) {
+        return;
     }
+    status::SLEEP_PENDING.store(true, Ordering::Relaxed);
+    loop {
+        if !status::PANEL_VISIBLE.load(Ordering::Relaxed) {
+            break;
+        }
+        if wake_pending() {
+            defmt::info!("pending sleep: wake line asserted -- aborting sleep entry");
+            break;
+        }
+        match select(
+            status::PANEL_DONE.wait(),
+            embassy_time::Timer::after(PEEK_POLL),
+        )
+        .await
+        {
+            Either::First(()) => break,
+            Either::Second(()) => {}
+        }
+    }
+    status::SLEEP_PENDING.store(false, Ordering::Relaxed);
 }
 
-/// Run one button peek: open the panel, wait until it closes (timeout or
-/// second press). Residual race, accepted: a press landing between PANEL_DONE
-/// and the pads re-arming is lost -- press again.
-async fn run_peek() {
+/// Run one button peek: open the panel and wait for it to close -- UNLESS a
+/// wake line asserts first, in which case return immediately WITH THE PANEL
+/// STILL OPEN (wake must not wait for the screen; the panel keeps running and
+/// simply shows the now-awake state, and the next sleep waits for its natural
+/// close). `wake_pending` is polled every [`PEEK_POLL`]; all wake lines are
+/// level-holding so a poll cannot miss one.
+///
+/// Residual race, accepted: a press landing between PANEL_DONE and the pads
+/// re-arming is lost -- press again.
+async fn run_peek(mut wake_pending: impl FnMut() -> bool) {
     use crate::display::status;
-    defmt::info!("button peek: showing status panel, then re-entering sleep");
+    use embassy_futures::select::{Either, select};
+    defmt::info!("button peek: showing status panel");
     status::PANEL_DONE.reset();
     status::SHOW_PANEL.signal(());
-    status::PANEL_DONE.wait().await;
+    loop {
+        match select(status::PANEL_DONE.wait(), embassy_time::Timer::after(PEEK_POLL)).await {
+            Either::First(()) => return,
+            Either::Second(()) => {
+                if wake_pending() {
+                    defmt::info!("peek: wake line asserted -- resuming with panel open");
+                    return;
+                }
+                // Missed-signal belt-and-braces (same race as the pending
+                // wait): if the panel is dark, PANEL_DONE fired without us.
+                if !status::PANEL_VISIBLE.load(core::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// Sleep the RP2350 until the RTC's INT line pulses.
@@ -200,21 +268,39 @@ pub async fn wait_rtc_int() {
 /// `f` returning its own line's LEVEL is what makes peeks and mid-peek wakes
 /// safe here: it is re-evaluated before every re-entry, so a HINT that
 /// asserted while the panel was up is seen, not slept through.
-pub async fn with_rtc_dormant_wake(mut f: impl FnMut() -> bool) -> bool {
+pub async fn with_rtc_dormant_wake(mut f: impl FnMut(bool) -> bool) -> bool {
     let mut guard = RTC_INT.lock().await;
     let rtc_int = guard
         .as_mut()
         .expect("power::with_rtc_dormant_wake before power::init");
 
-    close_panel_if_visible().await;
+    wait_panel_closed_for_sleep(|| f(false) || rtc_int.is_low()).await;
 
     loop {
+        // LEVEL pre-checks before dormanting: a wake that fired while the
+        // panel was up (clocks running, pads disarmed) left no edge to catch,
+        // but every wake line holds its level. `f(false)` asks the caller
+        // about its own line (HINT) without entering dormant.
+        if f(false) {
+            return true;
+        }
+        if rtc_int.is_low() {
+            return false;
+        }
+
+        defmt::info!("entering DORMANT (HINT + RTC + button wake) -- last log until wake");
         let mut btn = steal_button();
         let own_source = {
             let _btn_wake = btn.dormant_wake(edge_low());
             let _rtc_wake = rtc_int.dormant_wake(edge_low());
-            f()
+            f(true)
         };
+        defmt::info!(
+            "dormant exit: own={} rtc_low={} btn_low={}",
+            own_source,
+            rtc_int.is_low(),
+            btn.is_low()
+        );
         let rtc_fired = rtc_int.is_low();
         let btn_pressed = btn.is_low();
         core::mem::forget(btn); // Drop would deconfigure display_task's pad
@@ -223,8 +309,10 @@ pub async fn with_rtc_dormant_wake(mut f: impl FnMut() -> bool) -> bool {
             return own_source;
         }
         if btn_pressed {
-            run_peek().await;
-            continue; // same sleep, same pads; f re-checks HINT on entry
+            // Peek; aborts within PEEK_POLL if HINT or the RTC asserts, so
+            // the panel can never defer a wake.
+            run_peek(|| f(false) || rtc_int.is_low()).await;
+            continue; // pre-checks above decide what the panel window brought
         }
         // Spurious: neither source nor button. Report as an RTC-side wake --
         // identical to the pre-peek behaviour (any non-HINT wake ended the
@@ -237,15 +325,23 @@ pub async fn with_rtc_dormant_wake(mut f: impl FnMut() -> bool) -> bool {
 /// loops until `f`'s OWN source fired -- there is no RTC alarm in this mode
 /// (motion is the only legitimate end), so an RTC-attributed or spurious wake
 /// just re-enters. The RTC pad is deliberately NOT armed.
-pub async fn with_button_peek_dormant(mut f: impl FnMut() -> bool) {
-    close_panel_if_visible().await;
+pub async fn with_button_peek_dormant(mut f: impl FnMut(bool) -> bool) {
+    wait_panel_closed_for_sleep(|| f(false)).await;
 
     loop {
+        // LEVEL pre-check: motion that asserted during a panel window is
+        // caught here, before (instead of) dormanting.
+        if f(false) {
+            return;
+        }
+
+        defmt::info!("entering DORMANT (HINT + button wake) -- last log until wake");
         let mut btn = steal_button();
         let own_source = {
             let _btn_wake = btn.dormant_wake(edge_low());
-            f()
+            f(true)
         };
+        defmt::info!("dormant exit: own={} btn_low={}", own_source, btn.is_low());
         let btn_pressed = btn.is_low();
         core::mem::forget(btn);
 
@@ -253,9 +349,10 @@ pub async fn with_button_peek_dormant(mut f: impl FnMut() -> bool) {
             return;
         }
         if btn_pressed {
-            run_peek().await;
+            // Peek; aborts within PEEK_POLL the moment motion asserts.
+            run_peek(|| f(false)).await;
         }
-        // Not our source: re-enter (f re-checks its line on entry).
+        // Not our source: loop; the pre-check decides.
     }
 }
 
@@ -306,11 +403,21 @@ pub async fn sleep_dormant() {
 
     #[cfg(not(feature = "mock_host_sleep"))]
     {
-        close_panel_if_visible().await;
+        wait_panel_closed_for_sleep(|| rtc_int.is_low()).await;
 
         defmt::info!("entering DORMANT (RTC INT + button wake) -- last log until wake");
 
         loop {
+            // LEVEL pre-check before arming: an RTC alarm that fired while the
+            // panel was up (clocks running, pads disarmed) produced an edge
+            // nobody latched — but INT holds low until its flag is cleared, so
+            // this check catches it. Without it, re-entering with an EDGE
+            // trigger on an already-low line sleeps forever. (No hot-loop
+            // risk: arm_wake_secs clears the flag before each arm.)
+            if rtc_int.is_low() {
+                break;
+            }
+
             // Both guards must be alive across the single dormant_sleep().
             // They disarm on drop; the button Input must then be forgotten,
             // never dropped (see the pin-steal notes above).
@@ -338,8 +445,10 @@ pub async fn sleep_dormant() {
                 break;
             }
             if btn_pressed {
-                run_peek().await;
-                continue; // same sleep: re-arm both pads, back to DORMANT
+                // Peek; aborts within PEEK_POLL if the RTC asserts, so the
+                // panel can never defer this sleep's wake.
+                run_peek(|| rtc_int.is_low()).await;
+                continue; // pre-check at loop top decides what happened
             }
             // Spurious wake: neither line low. Return; sleep_for_secs
             // re-measures against the RTC and re-arms the remainder.
