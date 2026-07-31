@@ -66,5 +66,11 @@ pub static MQTT_COMMAND: Signal<CriticalSectionRawMutex, MqttCommand> = Signal::
 pub static CESQ_RESULT: Signal<CriticalSectionRawMutex, Result<cesq::CesqStatus, ModemError>> =
     Signal::new();
 
+/// Fired once by `command_task` when the one-shot network diagnostic
+/// (`ModemCommand::NetDiag`) has finished. Carries no data -- the diagnostic
+/// logs its findings over defmt; this only unblocks `network_task` so bring-up
+/// can proceed.
+pub static DIAG_RESULT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
 pub static CEREG_RESULT: Signal<CriticalSectionRawMutex, Result<cereg::CeregStatus, ModemError>> =
     Signal::new();

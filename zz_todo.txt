@@ -1,17 +1,6 @@
+1) is signal really bad or it is getting stuck in finding the signal?
 
-IMU reports arrive via Signal/Channel from imu_task
-Moving → short wake interval (e.g. 15 min)
-Stationary → long interval or dormant sleep until significant motion
-
-Edge cases to handle:
-
-GNSS fix timeout — publish anyway with last known location or no location
-MQTT stack fails to come up — retry or skip publish, go back to sleep
-GNSS_STATE::Error / MQTT_STATE down — handle gracefully, don't hang
-
-No URC subscription needed — everything arrives via GNSS_STATE watch, MQTT_STATE watch, PUBLISH_RESULT signal, and IMU channel.
+2) it should enter PSM when it really cannot get signal - but psm is a network thing and needs an alternate mechanism
 
 
->>>Outside of the task:::
-implement NMEA parsing to get access to speed.
 

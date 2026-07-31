@@ -36,6 +36,9 @@ pub enum ModemCommand {
     ExitPsm,
     CeregQuery(cereg::CeregQuery),
     CesqQuery(cesq::CesqQuery),
+    /// One-shot network diagnostic: CFUN?/CEREG?/COPS? dumped to defmt.
+    /// Fired manually (gated by a const in `network_task`); see `run_net_diag`.
+    NetDiag,
 }
 
 /// Sole owner of the atat client and of the modem wake pin -- the true modem
@@ -181,8 +184,68 @@ pub async fn command_task(
                 #[allow(unreachable_patterns)]
                 _ => unreachable!(),
             },
+            ModemCommand::NetDiag => {
+                run_net_diag(client, &mut urc_sub).await;
+                communication::DIAG_RESULT.signal(());
+            }
         }
     }
+}
+
+/// One-shot network diagnostic. Answers, from the log alone: is the radio on
+/// (CFUN?), are we registered and how (CEREG), who did we land on (COPS?), and
+/// and who did we land on (COPS?).
+///
+/// `+CFUN`/`+COPS` responses return to `send()` and are logged verbatim.
+/// `+CEREG` is a URC token, so `AT+CEREG?` is fired only to provoke a fresh URC,
+/// which is then read from the subscription (its reply never reaches `send()`).
+///
+/// Gated behind a const at the call site so it does not run every cycle.
+async fn run_net_diag(
+    client: &mut Client<'static, uart::BufferedUartTx, INGRESS_BUF_SIZE>,
+    urc_sub: &mut atat::UrcSubscription<'static, ModemUrc, URC_CAPACITY, URC_SUBSCRIBERS>,
+) {
+    use crate::modem::mqtt::commands::netdiag;
+
+    defmt::info!("=== NET DIAG START ===");
+
+    // Radio power state.
+    match client.send(&netdiag::CfunQuery).await {
+        Ok(r) => defmt::info!("CFUN? -> {=str}", r.text.as_str()),
+        Err(e) => defmt::warn!("CFUN? failed: {:?}", ModemError::from(e)),
+    }
+
+    // Registration. The reply to AT+CEREG? is classified as a URC and routed to
+    // the URC channel, so send() will not return it (it typically parse-errors on
+    // an empty body). Clear the sub, fire the query to force a fresh +CEREG URC,
+    // give the ingress task a moment to deliver it, then drain and log.
+    drain_urcs(urc_sub);
+    let _ = client.send(&cereg::CeregQuery).await; // reply lands as a URC, ignore
+    Timer::after(Duration::from_millis(200)).await;
+    let mut saw_cereg = false;
+    while let Some(urc) = urc_sub.try_next_message_pure() {
+        if let ModemUrc::Cereg(body) = urc {
+            defmt::info!("CEREG -> {=str}", body.as_str());
+            saw_cereg = true;
+        }
+    }
+    if !saw_cereg {
+        defmt::info!("CEREG -> (no URC seen)");
+    }
+
+    // Currently registered operator (meaningful only once registered).
+    match client.send(&netdiag::CopsRead).await {
+        Ok(r) => defmt::info!("COPS? -> {=str}", r.text.as_str()),
+        Err(e) => defmt::warn!("COPS? failed: {:?}", ModemError::from(e)),
+    }
+
+    // NOTE: AT+COPS=? (full PLMN scan) is deliberately NOT issued. On this modem
+    // it only ever returns +CME ERROR: 22 while camped/searching and, per
+    // hardware notes, briefly detaches the modem -- which in the bring-up path
+    // costs a multi-minute NB-IoT re-attach for zero information. CEREG + COPS?
+    // already give the state we need.
+
+    defmt::info!("=== NET DIAG END ===");
 }
 
 /// Discard any URCs queued since we last looked.

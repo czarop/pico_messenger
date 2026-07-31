@@ -352,7 +352,11 @@ pub async fn modem_task(
     info!("modem task spawned");
     let mut mqtt_watcher = communication::MQTT_STATE.receiver().unwrap();
     let mut gnss_watcher = communication::GNSS_STATE.receiver().unwrap();
- 
+
+    // One-time cold-boot modem wake; see the guarded block after the ready-wait
+    // below. Later cycles wake via the sleep path, so this only fires once.
+    let mut first_boot = true;
+
     loop {
         // Anchor for the cadence. Every update is scheduled CYCLE_SECS after this
         // point, so a probe or an early motion wake shortens the following sleep
@@ -370,7 +374,27 @@ pub async fn modem_task(
 
         // wait for modem ready before starting GNSS
         Timer::after(Duration::from_secs(12)).await;
- 
+
+        // Cold-boot modem wake. A reflash reboots the RP2350 but NOT the modem,
+        // which holds its state across a host reset. If the previous session
+        // left the modem in PSM, every network command returns +CME ERROR: 1120
+        // ("AT command forward to APP error" -- the AT core answers but the
+        // protocol/APP core is suspended) and bring-up livelocks on the CGPADDR
+        // poll. The per-cycle wake at the end of this loop only covers PSM this
+        // firmware entered; the first cycle after a cold boot (reflash, or a
+        // host watchdog/brownout reset in the field) has no such wake. Do one
+        // here, after the ready-settle so the modem's AT interface is up on a
+        // true cold power-on too. Idempotent: if the modem is already awake the
+        // AT ping in exit_psm just returns OK. Non-fatal on failure -- the next
+        // command may re-wake it over the UART anyway.
+        if first_boot {
+            first_boot = false;
+            info!("cold-boot: waking modem (in case it is in PSM)");
+            if let Err(e) = crate::modem::psm::exit_psm().await {
+                warn!("cold-boot exit_psm failed: {:?} — continuing", e);
+            }
+        }
+
         // Sequential, MQTT FIRST. The link is needed in BOTH outcomes -- to send
         // a location OR a no-fix heartbeat -- whereas a fix is only worth
         // acquiring if there is something to send it over. So if MQTT fails there

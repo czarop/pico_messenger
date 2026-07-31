@@ -10,6 +10,7 @@ pub mod reset;
 pub mod clock;
 pub mod cereg;
 pub mod cesq;
+pub mod netdiag;
 
 #[derive(Clone, AtatResp)]
 pub struct OkResponse;

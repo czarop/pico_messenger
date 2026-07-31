@@ -83,9 +83,37 @@ pub async fn network_task(
     // triggers it after two dead polls (~4 min) rather than hanging.
     let mut search_failures: u8 = 0;
     let mut registered = true;
+
+    // One-shot network diagnostic (CFUN?/CEREG?/COPS? dumped to defmt).
+    // Set true to run once on the first bring-up after boot, then it self-clears.
+    const DIAG_SCAN: bool = true;
+    let mut diag_done = false;
+
     'outer: loop {
+        if DIAG_SCAN && !diag_done {
+            diag_done = true;
+            defmt::info!("firing one-shot network diagnostic (COPS scan may take minutes)");
+            COMMAND_CHANNEL
+                .send(command_task::ModemCommand::NetDiag)
+                .await;
+            communication::DIAG_RESULT.wait().await;
+        }
         if !matches!(state_watcher.try_get(), Some(state::MqttStackState::Down)) && try_disconnect {
             defmt::info!("disconnecting");
+
+            // Disarm immediately. A teardown is a one-shot: it is armed by a
+            // Stop and must fire exactly once. If it stays armed past this block,
+            // every subsequent IpUp transition re-enters teardown -- and after a
+            // reset the modem re-attaches on its own, emitting +CGEV ME PDN ACT 5
+            // / +CEREG(registered) URCs that drive the stack back to IpUp with no
+            // MQTT session established. Each of those then issues an MQTTDISC that
+            // can only fail with 2218 ("no session"), which the reset-on-failed-
+            // DISC path below reads as a wedged socket and answers with another
+            // AT#RESET=0 -- which produces the next re-attach URC. That is the
+            // 3-4 reset burst seen in the diag counters, ending only when the next
+            // cycle's Start finally clears the flag. Clearing it here breaks the
+            // loop at the source: re-arming requires a fresh Stop.
+            try_disconnect = false;
 
             // Settle before tearing down. On a marginal link, MQTTDISC issued
             // immediately after a publish OK races the still-in-flight PUBLISH
@@ -675,8 +703,34 @@ pub async fn network_task(
                                     break;
                                 }
                                 Ok(true) => {
-                                    // PDP address present but stat=2 (searching).
-                                    info!("PDP active but not registered (searching) - waiting");
+                                    // PDP context is up with a valid IP, but the
+                                    // tracked CEREG stat still says 2 (searching). On
+                                    // this Soracom/roaming setup that state can stay
+                                    // frozen for tens of minutes while the data bearer
+                                    // is already up and stable -- observed: the same IP
+                                    // (10.229.109.102) held rock-steady across a 100s+
+                                    // poll with CGPADDR returning OK every time and NO
+                                    // +CEREG URC ever arriving to flip the stat. A modem
+                                    // with no coverage loses the PDP context and the IP;
+                                    // this one keeps both. Waiting on CEREG here means
+                                    // never bringing MQTT up despite a usable bearer.
+                                    //
+                                    // So treat a valid PDP address as the go signal and
+                                    // let the SOCKETCREATE + TLS connect be the real
+                                    // liveness probe. CGPADDR is a direct query with a
+                                    // reliable response, unlike the URC-tracked CEREG
+                                    // flag which can miss the edge that would clear it.
+                                    // If the bearer isn't actually routable the create
+                                    // fails and we drop to Down exactly as today -- one
+                                    // attempt per poll pass (the break below), not a 3s
+                                    // busy-loop.
+                                    info!(
+                                        "PDP active, CEREG still searching - seeding IpUp anyway (socket is the probe)"
+                                    );
+                                    search_failures = 0;
+                                    state_sender.send(state::MqttStackState::IpUp);
+                                    seeded = true;
+                                    break;
                                 }
                                 Ok(false) => {
                                     info!("PDP context not active yet, polling...");
@@ -703,23 +757,27 @@ pub async fn network_task(
                                 warn!("registered but PDP poll did not seed - waiting for CGEV edge");
                             } else {
                                 search_failures = search_failures.saturating_add(1);
+                                // NB-IoT cold attach here (roaming onto Vodafone,
+                                // indoors) can take tens of minutes -- observed ~45
+                                // min before it finally camped. This branch used to
+                                // AT#RESET=0 after ~2 dead polls (~4 min), but a reset
+                                // reboots the modem and DISCARDS all acquisition
+                                // progress, restarting the cold attach from zero. Any
+                                // attach slower than that budget could therefore never
+                                // complete -- the modem reset itself mid-search in a
+                                // loop, which is exactly the endless "PDP query not
+                                // ready" behaviour seen on hardware. So do NOT reset.
+                                // Drop to Down and let the modem keep searching
+                                // autonomously; when it finally attaches, the
+                                // registration edge (+CEREG stat 5 / +CGEV ME PDN ACT
+                                // 5, both handled while Down) re-drives bring-up via
+                                // the IpUp block above. Slow, but it completes rather
+                                // than sabotaging itself.
                                 warn!(
-                                    "still searching after full poll (dead poll {}) - PDP up but stat 2",
+                                    "still searching after full poll (attempt {}) - waiting for attach, NOT resetting",
                                     search_failures
                                 );
-                                if search_failures >= 2 {
-                                    warn!(
-                                        "modem wedged searching with live PDP - resetting (AT#RESET=0)"
-                                    );
-                                    search_failures = 0;
-                                    COMMAND_CHANNEL
-                                        .send(command_task::ModemCommand::ModemReset(
-                                            ModemReset::default(),
-                                        ))
-                                        .await;
-                                    let _ = communication::NETWORK_RESULT.wait().await;
-                                    state_sender.send(state::MqttStackState::Down);
-                                }
+                                state_sender.send(state::MqttStackState::Down);
                             }
                         }
                         break;
