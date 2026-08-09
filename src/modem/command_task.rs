@@ -28,6 +28,11 @@ pub enum ModemCommand {
     ModemReset(reset::ModemReset),
     MqttConnect(connect::MqttConnect),
     MqttDisconnect(connect::MqttDisconnect),
+    /// Observation-only: query AT#MQTTCONNECT? and log the stack's connection
+    /// state. Fire-and-forget (no result signal); used before teardown to see
+    /// what the modem believes before we issue the graceful (broker round-trip)
+    /// MQTTDISC that can wedge on a dead link.
+    MqttStateProbe,
     MqttPublish(publish::MqttPublish),
     MqttSubscribe(subscribe::MqttSubscribe),
     MqttUnsubscribe(subscribe::MqttUnsubscribe),
@@ -139,6 +144,18 @@ pub async fn command_task(
                 #[allow(unreachable_patterns)]
                 _ => unreachable!(),
             },
+            ModemCommand::MqttStateProbe => {
+                // Observation only -- no result signal. Logs the stack's own
+                // view (#MQTTCONNECT: 1,... = connected, 0 = not) so we can
+                // confirm it reliably reports 0 on a dead session before gating
+                // DISC on it.
+                match client.send(&connect::MqttConnectQuery).await {
+                    Ok(r) => defmt::info!("MQTT state before teardown -> {=str}", r.text.as_str()),
+                    Err(e) => {
+                        defmt::warn!("MQTT state probe failed: {:?}", ModemError::from(e))
+                    }
+                }
+            }
             ModemCommand::MqttPublish(m) => match client.send(&m).await {
                 Ok(_) => communication::PUBLISH_RESULT.signal(Ok(())),
                 Err(e) => communication::PUBLISH_RESULT.signal(Err(ModemError::from(e))),

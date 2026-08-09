@@ -1,6 +1,7 @@
 use atat::atat_derive::AtatCmd;
 use heapless::String;
 
+use crate::modem::mqtt::commands::netdiag::{raw_dump, RawAtResp};
 use crate::modem::mqtt::commands::OkResponse;
 
 #[derive(Clone)]
@@ -112,5 +113,27 @@ impl Default for MqttConnect {
 }
 
 #[derive(Clone, AtatCmd)]
-#[at_cmd("#MQTTDISC", OkResponse, timeout_ms = 40000)]
+// Manual gives #MQTTDISC a 20s max response time. It is a GRACEFUL disconnect
+// (a broker round-trip), so on a silently-dead TLS link it hangs until it times
+// out -- and hardware shows it hangs even when #MQTTCONNECT? still reports
+// connected (a stale 1), so we can't gate it away. Previously 40s, which meant
+// a wedge burned 40s before the teardown reset could reclaim it. Cut to 22s
+// (the modem's own 20s ceiling + ~2s UART/processing slack): a legitimately
+// slow-but-valid disconnect still completes, but a true hang is reclaimed ~18s
+// sooner, and this now fires before the 30s "did not reach Down" watchdog.
+#[at_cmd("#MQTTDISC", OkResponse, timeout_ms = 22000)]
 pub struct MqttDisconnect;
+
+/// `AT#MQTTCONNECT?` -- read the stack's own view of the connection:
+/// `#MQTTCONNECT: 1,<ctx>,<socket>,<broker>,<port>,<user>` when it believes it
+/// is connected, or `#MQTTCONNECT: 0` when not. This is a LOCAL state read (the
+/// modem reporting its own belief), not a broker round-trip, so it returns fast
+/// and -- unlike the graceful `#MQTTDISC` -- cannot hang on a dead TLS link.
+///
+/// Captured raw for now: we only want to observe what it reports right before a
+/// teardown, to confirm it reliably says `0` on a dead session before we gate
+/// DISC on it. `20000` matches the manual's max response time as a safety net;
+/// in practice a local read is near-instant.
+#[derive(Clone, AtatCmd, Default)]
+#[at_cmd("#MQTTCONNECT?", RawAtResp, parse = raw_dump, timeout_ms = 20000)]
+pub struct MqttConnectQuery;

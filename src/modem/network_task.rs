@@ -139,6 +139,15 @@ pub async fn network_task(
             }
             subscribed_topics.clear();
 
+            // Observation-only: log what the modem thinks the connection state is
+            // right before the graceful DISC. Ordered ahead of MqttDisconnect on
+            // the command channel, so command_task logs the state first. No wait
+            // -- we don't gate on it yet, just gathering evidence that it reliably
+            // reports 0 on the dead sessions that make DISC wedge.
+            COMMAND_CHANNEL
+                .send(command_task::ModemCommand::MqttStateProbe)
+                .await;
+
             COMMAND_CHANNEL
                 .send(command_task::ModemCommand::MqttDisconnect(
                     MqttDisconnect {},

@@ -36,3 +36,6 @@ tcptest:
 
 attach:
     probe-rs attach --chip RP2350 target/thumbv8m.main-none-eabihf/release/pico_messenger
+
+loopattach:
+    ./reattach.sh
